@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>My experiment</title>
+    <script src="https://unpkg.com/jspsych@8.3.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-canvas-keyboard-response@2.2.0"></script>
+    <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet" type="text/css" />
+</head>
+<body></body>
+<script>
+
+    const rdkSettings = {
+        rdkRadius: 300,
+        nDots: 17,
+        dotRadiusPix: 3,
+        dotColour: 'black',
+        trialDuration: 3000
+    }
+
+    // initialize jsPsych
+    const jsPsych = initJsPsych();
+    const timeline = [];
+
+    let animationID;
+    let trialRunning = false; // This variable is slight overkill but double protects against requestAnimationFrame trying to paint after trial ends.
+
+    // RDK drawing
+    function drawRDK(c, rdkRadius, nDots, dotSize, colour='black'){
+        const ctx = c.getContext('2d');
+        if(!trialRunning) {
+            stopRAQ()
+            clearCanvas(c, ctx)
+            return;
+        }
+
+        const startTime = performance.now();
+        // size of circle, the colour and size of dots, length of time
+        const rdkCentre = {x: c.width/2, y: c.height/2};
+        // DEBUGGING - draw outline of rdk circle and outer box
+        drawCanvasOutline(c, ctx) // DEBUG
+        drawRDKOutline(ctx, rdkCentre, rdkRadius); //DEBUG
+
+        const dots = [] // Store dot coordinates to check intersection
+        for(let i = 0; i < nDots; i++){
+            // Get new non-overlapping dot
+            let newDot = getRandomDotCoordinates(rdkCentre, rdkRadius);
+            let detectedIntersections = 0
+            while (intersectsExistingDot(newDot, dots, dotSize)) {
+                detectedIntersections++
+                if(detectedIntersections >= 50) { // TODO: Consider removing this check - but it protects against a page crash when trying things out
+                    console.warn(`Detected ${detectedIntersections} intersections with existing dots, exiting to avoid crash - maybe dots can't fit inside circle?`)
+                    return;
+                }
+                newDot = getRandomDotCoordinates(rdkCentre, rdkRadius);
+            }
+            // console.log(detectedIntersections + ' intersections detected on dot ' + i)
+            dots.push(newDot);
+            drawPoint(ctx, newDot, dotSize, colour, i+1);
+        }
+        animationID = requestAnimationFrame(() => checkStimTime(startTime, c, ctx))
+    }
+
+    function checkStimTime(startTime, c, ctx){
+        // Check if we still want another frame first, allows StopClock to cancel the animation
+        // NOTE: trial ends after stim_duration - this clears the canvas first if that overshoots - you can see the blink
+        if (animationID && performance.now() - startTime <= rdkSettings.trialDuration && trialRunning) {
+            animationID = requestAnimationFrame(()=> checkStimTime(startTime, c, ctx))
+        } else {
+            trialRunning = false;
+            stopRAQ()
+            clearCanvas(c, ctx)
+            console.log('Canvas cleared by Request Animation Frame')
+        }
+    }
+
+    function stopRAQ() {
+        if (animationID) {
+            cancelAnimationFrame(animationID)
+            animationID = undefined
+        }
+    }
+
+    function clearCanvas(canvas, ctx){
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // For debugging - make sure dots are inside circle
+    function drawRDKOutline(ctx, centre, radius){
+        ctx.beginPath();
+        ctx.arc(centre.x, centre.y, radius, 0, 2 * Math.PI);
+        ctx.stroke();
+    }
+
+    function drawCanvasOutline(c, ctx){
+        ctx.beginPath();
+        ctx.rect(0, 0, c.width, c.height);
+        ctx.stroke();
+    }
+
+
+    function getRandomDotCoordinates(centre, radius){
+        let randomAngle = Math.random()*360; // or 359?
+        let randomDistance = Math.random() // 0=centre, 1=circumference // TODO: note dot centre is within circle bounds - so can poke but by dot radius;
+        return {
+            x: centre.x + radius * Math.cos(-randomAngle*Math.PI/180) * randomDistance,
+            y: centre.y + radius * Math.sin(-randomAngle*Math.PI/180) * randomDistance
+        };
+    }
+
+    function circlesIntersect(centreA, centreB, dotRadius){
+        //https://www.geeksforgeeks.org/dsa/check-two-given-circles-touch-intersect/
+        // Find the distance between the centers.
+        const dist = Math.sqrt((centreA.x-centreB.x)**2 + (centreA.y-centreB.y)**2);
+        // Check whether the circles have at least one common point.
+        return dist < dotRadius*2;
+    }
+
+    function intersectsExistingDot(newDot, previousDots, dotRadius){
+        const nPreviousDots = previousDots.length;
+        for(let i = 0; i < nPreviousDots; i++){
+            if(circlesIntersect(newDot, previousDots[i], dotRadius)){
+                // console.log(`${nPreviousDots+1} intersected with dot ${i+1}`); // DEBUG
+                return true
+            }
+        }
+        return false;
+    }
+
+    function drawPoint(ctx, dot, dotSize, colour='black', label){
+        // https://stackoverflow.com/questions/32681610/drawing-point-on-circle
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        ctx.arc(dot.x, dot.y, dotSize, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // Optional label for debugging
+        // if(label !== undefined){
+        //     ctx.font = `${dotSize*2}px sans-serif`;
+        //     ctx.fillStyle = 'lightgrey'
+        //     const textSize = ctx.measureText(label).width/2;
+        //     ctx.fillText(label, dot.x-textSize, dot.y+textSize); //dot.x-(textSize.width/2), dot.y-(textSize.height/2)
+        // }
+    }
+
+    const rdkTrial = {
+        type: jsPsychCanvasKeyboardResponse,
+        canvas_size: [rdkSettings.rdkRadius*2, rdkSettings.rdkRadius*2], // Canvas fit to RDK
+        stimulus: (c)=>{drawRDK(c, rdkSettings.rdkRadius, rdkSettings.nDots, rdkSettings.dotRadiusPix, rdkSettings.dotColour)},
+        choices: "NO_KEYS",
+        trial_duration: rdkSettings.trialDuration,
+        on_start: () => trialRunning = true,
+        on_finish: () => {
+            trialRunning = false;
+            stopRAQ();
+            console.log('Canvas cleared by trial_duration (jsPsych)');
+        }
+        // data: {key: 'value'}
+    }
+
+    /* define trial stimuli array for timeline variables */ // TODO: this is how you define trial vars
+    // const test_stimuli = [{ key: 'value'},];
+
+    /* define test procedure */
+    const test_procedure = {
+        timeline: [rdkTrial],
+        // timeline_variables: test_stimuli,
+        repetitions: 5,
+        // randomize_order: true
+    };
+    timeline.push(test_procedure);
+
+    /* start the experiment */
+    jsPsych.run(timeline);
+
+</script>
+</html>
