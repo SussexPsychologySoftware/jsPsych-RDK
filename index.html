@@ -4,6 +4,7 @@
     <title>My experiment</title>
     <script src="https://unpkg.com/jspsych@8.3.0"></script>
     <script src="https://unpkg.com/@jspsych/plugin-canvas-keyboard-response@2.2.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-call-function@1.1.3"></script>
     <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet" type="text/css" />
 </head>
 <body></body>
@@ -21,24 +22,59 @@
     const jsPsych = initJsPsych();
     const timeline = [];
 
+    const measureFrameInterval = async function (nFrames = 120, warmup = 20) {
+        // Store frames
+        const ts = [];
+        await new Promise(res => {
+            function tick(t) {
+                ts.push(t);
+                ts.length < nFrames + warmup ? requestAnimationFrame(tick) : res();
+            }
+            requestAnimationFrame(tick);
+        });
+
+        // Get median and MAD
+        const d = [];
+        for (let i = warmup+1; i < ts.length; i++) d.push(ts[i] - ts[i-1]);
+        d.sort((a, b) => a - b);
+        const median = d[Math.floor(d.length / 2)];
+        // calc error: Median Absolute Deviation
+        const mad = d.map(x => Math.abs(x - median)).sort((a, b) => a - b)[d.length >> 1];
+
+        console.log(median);
+        return { median, mad, hz: 1000 / median };
+    }
+
+    let frameInterval;
+    const setFrameInterval = async function (done) {
+        const res = await measureFrameInterval();
+        frameInterval = res;
+        done(res);
+    }
+
+    const frameIntervalTrial = {
+        type: jsPsychCallFunction, // see https://www.jspsych.org/v8/plugins/call-function/
+        func: setFrameInterval,
+        async: true
+    }
+
+    // RDK drawing
     let animationID;
     let trialRunning = false; // This variable is slight overkill but double protects against requestAnimationFrame trying to paint after trial ends.
 
-    // RDK drawing
     function drawRDK(c, rdkRadius, nDots, dotSize, colour='black'){
         const ctx = c.getContext('2d');
         if(!trialRunning) {
-            stopRAQ()
-            clearCanvas(c, ctx)
+            stopRAF()
+            hideStimulus(c, ctx)
             return;
         }
 
-        const startTime = performance.now();
         // size of circle, the colour and size of dots, length of time
         const rdkCentre = {x: c.width/2, y: c.height/2};
         // DEBUGGING - draw outline of rdk circle and outer box
-        drawCanvasOutline(c, ctx) // DEBUG
-        drawRDKOutline(ctx, rdkCentre, rdkRadius); //DEBUG
+        // drawCanvasOutline(c, ctx) // DEBUG
+        // drawRDKOutline(ctx, rdkCentre, rdkRadius); //DEBUG
 
         const dots = [] // Store dot coordinates to check intersection
         for(let i = 0; i < nDots; i++){
@@ -48,8 +84,8 @@
             while (intersectsExistingDot(newDot, dots, dotSize)) {
                 detectedIntersections++
                 if(detectedIntersections >= 50) { // TODO: Consider removing this check - but it protects against a page crash when trying things out
-                    console.warn(`Detected ${detectedIntersections} intersections with existing dots, exiting to avoid crash - maybe dots can't fit inside circle?`)
-                    return;
+                    console.error(`Detected ${detectedIntersections} intersections with existing dots, exiting to avoid crash - maybe dots can't fit inside circle?`)
+                    throw Error();
                 }
                 newDot = getRandomDotCoordinates(rdkCentre, rdkRadius);
             }
@@ -57,30 +93,32 @@
             dots.push(newDot);
             drawPoint(ctx, newDot, dotSize, colour, i+1);
         }
-        animationID = requestAnimationFrame(() => checkStimTime(startTime, c, ctx))
+
+        // Arm frame loop - note stim is static so doesn't need redrawing
+        // Pass start time from here, as we want actual draw from previous frame defined above
+        // previousTs passed in as startTime for first go, so difference is 0
+        animationID = requestAnimationFrame(startTime => checkStimTime(startTime, startTime, c, ctx))
     }
 
-    function checkStimTime(startTime, c, ctx){
-        // Check if we still want another frame first, allows StopClock to cancel the animation
-        // NOTE: trial ends after stim_duration - this clears the canvas first if that overshoots - you can see the blink
-        if (animationID && performance.now() - startTime <= rdkSettings.trialDuration && trialRunning) {
-            animationID = requestAnimationFrame(()=> checkStimTime(startTime, c, ctx))
+    function checkStimTime(previousTs, startTime, c, ctx){
+        const elapsedTimeAtNextFrame = (previousTs + frameInterval.median) - startTime;
+        if (animationID && elapsedTimeAtNextFrame < rdkSettings.trialDuration - frameInterval.median/2) {
+            animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx))
         } else {
-            trialRunning = false;
-            stopRAQ()
-            clearCanvas(c, ctx)
-            console.log('Canvas cleared by Request Animation Frame')
+            stopRAF()
+            hideStimulus(c, ctx)
+            // console.log('Canvas cleared by Request Animation Frame')
         }
     }
 
-    function stopRAQ() {
+    function stopRAF() {
         if (animationID) {
             cancelAnimationFrame(animationID)
             animationID = undefined
         }
     }
 
-    function clearCanvas(canvas, ctx){
+    function hideStimulus(canvas, ctx){
         ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
 
@@ -99,11 +137,11 @@
 
 
     function getRandomDotCoordinates(centre, radius){
-        let randomAngle = Math.random()*360; // or 359?
-        let randomDistance = Math.random() // 0=centre, 1=circumference // TODO: note dot centre is within circle bounds - so can poke but by dot radius;
+        const randomRadians = Math.random() * 2 * Math.PI; // or 359?
+        const randomDistance = Math.sqrt(Math.random()); // 0=centre, 1=circumference // TODO: note dot centre is within circle bounds - so can poke but by dot radius;
         return {
-            x: centre.x + radius * Math.cos(-randomAngle*Math.PI/180) * randomDistance,
-            y: centre.y + radius * Math.sin(-randomAngle*Math.PI/180) * randomDistance
+            x: centre.x + radius * Math.cos(randomRadians) * randomDistance,
+            y: centre.y + radius * Math.sin(randomRadians) * randomDistance
         };
     }
 
@@ -145,14 +183,20 @@
     const rdkTrial = {
         type: jsPsychCanvasKeyboardResponse,
         canvas_size: [rdkSettings.rdkRadius*2, rdkSettings.rdkRadius*2], // Canvas fit to RDK
-        stimulus: (c)=>{drawRDK(c, rdkSettings.rdkRadius, rdkSettings.nDots, rdkSettings.dotRadiusPix, rdkSettings.dotColour)},
+        stimulus: async (c)=>{
+            animationID = requestAnimationFrame(() => {
+                drawRDK(c, rdkSettings.rdkRadius, rdkSettings.nDots, rdkSettings.dotRadiusPix, rdkSettings.dotColour)
+            })
+        },
         choices: "NO_KEYS",
-        trial_duration: rdkSettings.trialDuration,
-        on_start: () => trialRunning = true,
+        trial_duration: rdkSettings.trialDuration + 500, // Note this starts earlier than my version and would fire too early too - make too long for accurate display times.
+        on_start: () => {
+            trialRunning = true
+        },
         on_finish: () => {
             trialRunning = false;
-            stopRAQ();
-            console.log('Canvas cleared by trial_duration (jsPsych)');
+            stopRAF();
+            // console.log('Canvas cleared by trial_duration (jsPsych)');
         }
         // data: {key: 'value'}
     }
@@ -161,16 +205,22 @@
     // const test_stimuli = [{ key: 'value'},];
 
     /* define test procedure */
-    const test_procedure = {
+    const rdkTrialsTimeline = {
         timeline: [rdkTrial],
         // timeline_variables: test_stimuli,
         repetitions: 5,
         // randomize_order: true
     };
-    timeline.push(test_procedure);
 
-    /* start the experiment */
+    const blocks = {
+        timeline: [frameIntervalTrial, rdkTrialsTimeline],
+        repetitions: 5,
+    };
+
+    timeline.push(blocks);
+
     jsPsych.run(timeline);
+
 
 </script>
 </html>
