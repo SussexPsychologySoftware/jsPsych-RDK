@@ -15,10 +15,15 @@
         nDots: 17, // nDots per colour
         dotRadiusPix: 3,
         dotColours: ['black', 'lightgrey'],
-        trialDuration: 3000,
         nTrials: 5,
         nBlocks: 3,
+        // NOTE: jsPsych's trial_duration will undershoot as it starts counting too early, and so cuts us off before the correct end time,
+        //  So I've added extra time to each trial and manually clear the stimulus from screen before actual trial ends (I call jsPsych.finishTrial() too)
+        //  I've console.logged() when the trial is ended by requestAnimationFrame, which should happen every trial
+        overshootAmountMs: 100
     }
+
+
 
     // GLOBALS ------------
     let frameInterval;
@@ -122,8 +127,7 @@
     }
 
     // RDK --------------------
-    function drawRDK(c, dotCoordinates){
-
+    function drawRDK(c, dotCoordinates, trialDuration){
         const ctx = c.getContext('2d');
         if(!trialRunning) {
             endTrial(c, ctx)
@@ -142,17 +146,17 @@
         // Arm frame loop - note stim is static so doesn't need redrawing
         // Pass start time from here, as we want actual draw from previous frame defined above
         // previousTs passed in as startTime for first go, so difference is 0
-        animationID = requestAnimationFrame(startTime => checkStimTime(startTime, startTime, c, ctx))
+        animationID = requestAnimationFrame(startTime => checkStimTime(startTime, startTime, c, ctx, trialDuration))
     }
 
-    function checkStimTime(previousTs, startTime, c, ctx){
+    function checkStimTime(previousTs, startTime, c, ctx, trialDuration){
         const elapsedTimeAtNextFrame = (previousTs + frameInterval.median) - startTime;
         // frameInterval.median/2 to round trialDuration to nearest frame, could undershoot though...
-        if (animationID && elapsedTimeAtNextFrame < rdkSettings.trialDuration - frameInterval.median/2) {
-            animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx))
+        if (animationID && elapsedTimeAtNextFrame < trialDuration - frameInterval.median/2) {
+            animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx, trialDuration))
         } else {
             endTrial(c, ctx)
-            // console.log('Canvas cleared by Request Animation Frame')
+            console.log('Canvas cleared by Request Animation Frame')
         }
     }
 
@@ -208,32 +212,22 @@
         stimulus: (c)=>{
             // const dots = getRandomRDKCoordinates() // Note: use this if you want to just calculate dot coordinates before each trial
             const dots = jsPsych.evaluateTimelineVariable('dotCoordinates') //https://www.jspsych.org/v8/reference/jspsych/#description_4
+            const trialDuration = jsPsych.evaluateTimelineVariable('trialDuration') - rdkSettings.overshootAmountMs
             // console.log(dots)
             animationID = requestAnimationFrame(() => {
-                drawRDK(c, dots)
+                drawRDK(c, dots, trialDuration)
             })
         },
         choices: "NO_KEYS",
-        trial_duration: function() {
-            //https://www.jspsych.org/v7/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
-            const durations = [1000, 2000, 3000];
-            // Pick a random duration in milliseconds from the array
-            const trialLength = jsPsych.randomization.sampleWithoutReplacement(durations, 1)[0];
-
-            // NOTE: jsPsych's trial_duration will almost certainly undershoot as it starts counting too early.
-            //  So we'd get cut off before the correct end time, hence we add extra time to each trial
-            //  and manually clear the stimulus from screen before actual trial ends (I call jsPsych.finishTrial() too)
-            //  I've console.logged() when the trial is ended by requestAnimationFrame, which should happen every trial
-            const overshootAmountMs = 100;
-            return trialLength + overshootAmountMs;
-        },
+        // https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
+        trial_duration: function() {return jsPsych.evaluateTimelineVariable('trialDuration')},
         on_start: () => {
             trialRunning = true
         },
         on_finish: () => {
             trialRunning = false;
             stopRAF();
-            // console.log('Canvas cleared by trial_duration (jsPsych)');
+            console.log('jsPsych ended trial');
         }
         // data: {key: 'value'}
     }
@@ -242,14 +236,23 @@
     // Pre-calculate dot coordinates for all blocks - have construct entire timeline each trial at a time as can't loop
     function makeTimeline(){
         const timeline = []
+
         for(let i = 0; i < rdkSettings.nBlocks; i++){
+            const trialDurations = [1000, 2000, 3000, 4000, 5000];
             timeline.push({ // Nested timeline makes the frameInterval at the start of the block
                 timeline: [measureFrameRateTrial],
             })
             for(let c = 0; c < rdkSettings.nTrials; c++){
+                // Pick a random duration in milliseconds from the array
+                // const trialLength = trialDurations.splice(Math.random()*(trialDurations.length-1))[0]; // To sample without replacement, but must be enough elements to sample from
+                const trialDuration = trialDurations[Math.floor(Math.random() * trialDurations.length)]
                 timeline.push({
                     timeline: [rdkTrial],
-                    timeline_variables: [{dotCoordinates: getRandomRDKCoordinates()}]
+                    timeline_variables: [{
+                        dotCoordinates: getRandomRDKCoordinates(),
+                        //https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
+                        trialDuration: trialDuration + rdkSettings.overshootAmountMs
+                    }]
                 })
             }
         }
