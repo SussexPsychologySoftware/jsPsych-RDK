@@ -151,6 +151,7 @@
     }
 
     function checkStimTime(previousTs, startTime, c, ctx, trialDuration, frameNumber){
+        // TODO: note these frame times are very precise, so recording maxFrameGapMs, dropped frames, or slow downs here could be helpful
         const elapsedTimeAtNextFrame = (previousTs + frameInterval.median) - startTime;
         // frameInterval.median/2 to round trialDuration to nearest frame, could undershoot though...
         // TODO: frameInterval.median could be > trialDuration if the user unfocused the tab and the frameRate got throttled
