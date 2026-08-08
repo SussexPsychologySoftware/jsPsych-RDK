@@ -41,7 +41,7 @@
         const dots = [] // Store dot coordinates to check intersection
         for(let i = 0; i < rdkSettings.nDots*rdkSettings.dotColours.length; i++){
             // Get new non-overlapping dot
-            let newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.dotRadiusPix);
+            let newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius);
             let detectedIntersections = 0
             while (intersectsExistingDot(newDot, dots, rdkSettings.dotRadiusPix)) {
                 detectedIntersections++
@@ -127,10 +127,11 @@
     }
 
     // RDK --------------------
-    function drawRDK(c, dotCoordinates, trialDuration){
-        const ctx = c.getContext('2d');
-        if(!trialRunning) {
-            endTrial(c, ctx)
+    function drawRDK(canvas, dotCoordinates, trialDuration){
+        const ctx = canvas.getContext('2d');
+        if(!trialRunning) { // just incase
+            stopRAF()
+            hideStimulus(canvas, ctx)
             return;
         }
 
@@ -146,16 +147,35 @@
         // Arm frame loop - note stim is static so doesn't need redrawing
         // Pass start time from here, as we want actual draw from previous frame defined above
         // previousTs passed in as startTime for first go, so difference is 0
-        animationID = requestAnimationFrame(startTime => checkStimTime(startTime, startTime, c, ctx, trialDuration))
+        animationID = requestAnimationFrame(startTime => checkStimTime(startTime, startTime, canvas, ctx, trialDuration, 1))
     }
 
-    function checkStimTime(previousTs, startTime, c, ctx, trialDuration){
+    function checkStimTime(previousTs, startTime, c, ctx, trialDuration, frameNumber){
         const elapsedTimeAtNextFrame = (previousTs + frameInterval.median) - startTime;
         // frameInterval.median/2 to round trialDuration to nearest frame, could undershoot though...
+        // TODO: frameInterval.median could be > trialDuration if the user unfocused the tab and the frameRate got throttled
+        //  consider jsPsych.data interaction tracking to flag/exclude trials where the tab lost focus
         if (animationID && elapsedTimeAtNextFrame < trialDuration - frameInterval.median/2) {
-            animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx, trialDuration))
+            animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx, trialDuration, ++frameNumber))
         } else {
-            endTrial(c, ctx)
+            // Run the clear and then request another frame to record the actual time the clear was rendered and record that.
+            hideStimulus(c, ctx);                 // paint the clear on THIS frame (K)
+            animationID = requestAnimationFrame(endTime => {   // fires on frame K+1 = clear becomes visible
+                animationID = undefined
+                const displayedDurationMs = endTime - startTime
+                const displayedDifferenceMs = displayedDurationMs - trialDuration
+                jsPsych.finishTrial({
+                    requestedDurationMs: trialDuration,
+                    startTime,
+                    endTime,
+                    displayedDurationMs,
+                    displayedDifferenceMs,
+                    nFrames: frameNumber,
+                    frameIntervalMs: frameInterval.median,
+                    fps: frameInterval.FPS
+                });
+                console.log(`Duration requested: ${trialDuration}ms, recorded: ${displayedDurationMs}ms, difference: ${displayedDifferenceMs}ms. N Frames ${frameNumber}`)
+            });
             console.log('Canvas cleared by Request Animation Frame')
         }
     }
@@ -169,12 +189,6 @@
 
     function hideStimulus(canvas, ctx){
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-
-    function endTrial(canvas, ctx){
-        stopRAF()
-        hideStimulus(canvas, ctx)
-        jsPsych.finishTrial()
     }
 
     // For debugging - make sure dots are inside circle
@@ -238,6 +252,7 @@
         const timeline = []
 
         for(let i = 0; i < rdkSettings.nBlocks; i++){
+            // NOTE: if you want displayed times consistent, we'd need to use durations that are multiples of the frame rate, or display a number of frames directly
             const trialDurations = [1000, 2000, 3000, 4000, 5000];
             timeline.push({ // Nested timeline makes the frameInterval at the start of the block
                 timeline: [measureFrameRateTrial],
