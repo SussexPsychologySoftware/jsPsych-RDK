@@ -242,19 +242,21 @@
             timeline.push({ // Nested timeline makes the frameInterval at the start of the block
                 timeline: [measureFrameRateTrial],
             })
+            const blockTrials = {
+                timeline: [rdkTrial],
+                timeline_variables: []
+            }
             for(let c = 0; c < rdkSettings.nTrials; c++){
                 // Pick a random duration in milliseconds from the array
                 // const trialLength = trialDurations.splice(Math.random()*(trialDurations.length-1))[0]; // To sample without replacement, but must be enough elements to sample from
                 const trialDuration = trialDurations[Math.floor(Math.random() * trialDurations.length)]
-                timeline.push({
-                    timeline: [rdkTrial],
-                    timeline_variables: [{
-                        dotCoordinates: getRandomRDKCoordinates(),
-                        //https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
-                        trialDuration: trialDuration + rdkSettings.overshootAmountMs
-                    }]
+                blockTrials.timeline_variables.push({
+                    dotCoordinates: getRandomRDKCoordinates(),
+                    //https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
+                    trialDuration: trialDuration + rdkSettings.overshootAmountMs
                 })
             }
+            timeline.push(blockTrials)
         }
         console.log(timeline)
         return timeline
