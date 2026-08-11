@@ -148,11 +148,15 @@
     }
 
     function checkStimTime(previousTs, startTime, c, ctx, trialDuration, frameNumber){
+        if (!trialRunning) { animationID = undefined; return; }
+        // maxGap = Math.max(maxGap, ts - prevTs);
+        // TODO: rename previousTs - it's current ts but not rendered yet, just call it ts
         // TODO: note these frame times are very precise, so recording maxFrameGapMs, dropped frames, or slow downs here could be helpful
         const elapsedTimeAtNextFrame = (previousTs + frameInterval.median) - startTime;
         // frameInterval.median/2 to round trialDuration to nearest frame, could undershoot though...
+
         // TODO: frameInterval.median could be > trialDuration if the user unfocused the tab and the frameRate got throttled
-        //  consider jsPsych.data interaction tracking to flag/exclude trials where the tab lost focus
+        //  consider jsPsych.data.getInteractionData() to flag/exclude trials where the tab lost focus
         if (animationID && elapsedTimeAtNextFrame < trialDuration - frameInterval.median/2) {
             animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx, trialDuration, ++frameNumber))
         } else {
@@ -160,11 +164,12 @@
             hideStimulus(c, ctx);                 // paint the clear on THIS frame (K)
             animationID = requestAnimationFrame(endTime => {   // fires on frame K+1 = clear becomes visible
                 animationID = undefined
+                trialRunning = false
                 const displayedDurationMs = endTime - startTime
                 const displayedDifferenceMs = displayedDurationMs - trialDuration
                 // TODO: could log expected error...
                 // const expectedDurationMs = Math.round(trialDuration/frameInterval.median)*frameInterval.median // Nearest whole frame
-
+                // TODO: consider wrapping in setTimeout(() => {}, 0)
                 jsPsych.finishTrial({
                     requestedDurationMs: trialDuration,
                     startTime,
