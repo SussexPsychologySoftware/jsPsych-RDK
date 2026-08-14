@@ -169,15 +169,33 @@
     // FRAME RATE --------------------
     const measureFrameInterval = async function (nFrames = 120, warmup = 20) {
         console.log('Measuring frame rate...')
+        // Note Chrome quantises DOMHighResTimeStamps to 0.1ms grid unless page is cross-origin isolated
+        // e.g. 16.6667 will be as 16.7 = 59.88 FPS when 60FS
+        // Must serve not-cross origin (GitHub Pages doesn't do this) for slightly better timestamps
+        // Don't be fooled by floating point issues giving many significant figures.
+
+
         // Store frames
         const ts = [];
+        const deltas = []
         await new Promise(res => { // could probably do this with a loop somehow
             function tick(t) {
                 ts.push(t);
+                deltas.push(performance.now() - t);
                 ts.length < nFrames + warmup ? requestAnimationFrame(tick) : res();
             }
             requestAnimationFrame(tick);
         });
+
+        // On deltas:
+        deltas.sort((a, b) => a - b);   // numeric sort; JS defaults to lexicographic
+        // console.log({ min: deltas[0], median: deltas[30], max: deltas[59] });
+
+        // TODO: consider:
+        // k = Math.round(interval / m)
+        // sum(k) = true total vsyncs across the baseline
+        //interval = (ts[last] − ts[0]) / K
+
 
         // Get median
         const d = [];
@@ -185,6 +203,9 @@
         d.sort((a, b) => a - b); // sort frame times
         const middleIndex = Math.floor(d.length / 2)
         const median = d[middleIndex];
+
+
+        // (ts[ts.length-1] - ts[0]) / (ts.length)
         // calc error: Median Absolute Deviation - could be useful...
         // const mad = d.map(x => Math.abs(x - median)).sort((a, b) => a - b)[middleIndex];
 
