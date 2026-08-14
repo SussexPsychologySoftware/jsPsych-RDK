@@ -331,52 +331,73 @@
     function runRAFLoop(
         canvas,
         duration,
-        firstDraw,                    // (ctx, canvas) => void
-        onFinish,                     // (data) => void
-        animation = null,             // (ctx, canvas, info) => void   omit for static stimuli
-        frameInterval = 1000/60,
+        firstDraw, // (ctx, canvas) => void
+        onFinish, // (data) => void
+        onFrame = null, // (ctx, canvas, info) => void  useful for animation and recording trial times; omit for static stimuli
+        frameInterval = null,
         hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height),
         ctx = canvas.getContext('2d'),
     ) {
-        let animationId = null, finished = false, startTime = null, frameNumber = 0;
+        let finished = false, frameNumber = 0;
+        let startTime = null, previousCallbackEndTimestamp = null, lastFrameTime = null;
+        let animationId = null, timeoutId = null;
 
         function cancel() {
-            if (animationId) cancelAnimationFrame(animationId)
-            animationId = null;
             finished = true;
+            if (animationId) cancelAnimationFrame(animationId)
+            if (timeoutId) clearTimeout(timeoutId);
+            animationId = null;
+            timeoutId = null;
         }
 
         function tick(timestamp){
-            if (finished) { cancel(); return; }
+            if(finished) { cancel(); return; }
+            frameInterval = timestamp-lastFrameTime // measured each frame - TODO: consider median or allowing passed in value
             frameNumber++;
+            // console.log('Time since last execute: ', (timestamp - previousCallbackEndTimestamp).toFixed(4))
             // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
             if (timestamp - startTime + (frameInterval * 1.5) < duration) {
-                animationId = requestAnimationFrame(timestamp => {
-                    if(animation) animation(canvas, ctx, duration, startTime, timestamp, frameNumber)
-                    tick(timestamp)
+                animationId = requestAnimationFrame(nextTimestamp => {
+                    lastFrameTime = timestamp // TODO: unsure where best to put this?
+                    if(onFrame) onFrame(canvas, ctx, duration, startTime, nextTimestamp, frameNumber)
+                    tick(nextTimestamp)
                 })
             } else {
                 hideStimulus(canvas, ctx)
                 animationId = requestAnimationFrame(endTime => {   // clear becomes visible when this fires
-                    animationId = null;
                     if (finished) return;
                     finished = true;
-                    // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint
+                    animationId = null;
+                    // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint, incase causes overrun
                     setTimeout(() => {
-                        onFinish(startTime, endTime, frameNumber)
+                        onFinish(startTime, endTime, duration, frameNumber, 'rAF')
                     }, 0)
                 });
-
             }
+            previousCallbackEndTimestamp = performance.now();
+            // console.log('Time to execute: ', (previousCallbackEndTimestamp - timestamp).toFixed(4))
         }
 
-        animationId = requestAnimationFrame(() => {
-            if (finished) return;
-            if(firstDraw) firstDraw(canvas, ctx, duration) // Run first draw
+        animationId = requestAnimationFrame((firstTimestamp) => {
+            if(finished) { cancel(); return; }
+            if(firstDraw) firstDraw(canvas, ctx) // Run first draw - pass firstTimestamp or duration?
             animationId = requestAnimationFrame(timestamp => {
                 startTime = timestamp;
+                lastFrameTime = firstTimestamp
                 tick(timestamp)
             })
+
+            // TODO: backup for RAF onBlur issue, although why end trial user can't see? may as well record issue - b
+            //  but need to distinguish code execution lag from blur
+
+            // timeoutId = setTimeout(() => {
+            //     if(finished) { return }
+            //     cancel()
+            //     const endTime = performance.now();
+            //     onFinish(firstTimestamp, endTime, duration, frameNumber, 'setTimeout')
+            // }, duration+(frameInterval*3)) // frameInterval may be null though
+
+            previousCallbackEndTimestamp = performance.now();
         })
 
         return cancel;
@@ -400,10 +421,7 @@
             // const dots = getRandomRDKCoordinates() // Note: use this if you want to just calculate dot coordinates before each trial
             const dots = jsPsych.evaluateTimelineVariable('dotCoordinates') //https://www.jspsych.org/v8/reference/jspsych/#description_4
             const trialDuration = jsPsych.evaluateTimelineVariable('trialDuration')
-            // console.log(dots)
-            animationID = requestAnimationFrame(() => {
-                drawRDK(c, dots, trialDuration)
-            })
+            const cancel = runRAFLoop(c, trialDuration, (canvas, ctx)=>{drawRDK(ctx, dots)}, finishTrial)
         },
         choices: "NO_KEYS",
         // https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
