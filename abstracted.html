@@ -9,6 +9,88 @@
 </head>
 <body></body>
 <script>
+    // FRAME RATE
+    /**
+     * Probe Chrome's own estimate of display pipeline depth.
+     *
+     * CAVEATS, in order of importance:
+     *  - expectedDisplayTime is the browser's BELIEF about when a frame becomes
+     *    visible, not a measurement. If Chrome's model omits a stage (e.g. an OS
+     *    compositor pass), this omits it too.
+     *  - This is the video element's path. A canvas captureStream source keeps it
+     *    closer to your canvas path than a decoded file would (no hardware overlay
+     *    / direct-scanout shortcuts), but it is still not a canvas measurement.
+     *  - The video must be rendered. display:none or zero size can suppress callbacks.
+     *  - Ground truth needs a photodiode. This is a sanity check, not a calibration.
+     *
+     *
+     *  USEAGE:
+     *  probePipelineDepth({ frameIntervalMs: 16.667 }).then(console.log)
+     */
+    async function probePipelineDepth({ frames = 60, frameIntervalMs = null } = {}) {
+        if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) {
+            throw new Error('requestVideoFrameCallback not supported here');
+        }
+
+        // Source: a canvas we keep dirtying, captured as a MediaStream.
+        // Avoids shipping a video asset and any codec/overlay weirdness.
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+
+        const video = document.createElement('video');
+        video.muted = true;        // required for autoplay without a gesture
+        video.playsInline = true;
+        Object.assign(video.style, {
+            position: 'fixed', right: '0', bottom: '0', width: '32px', height: '32px',
+            opacity: '0.02', pointerEvents: 'none', zIndex: '-1'
+        });
+        document.body.appendChild(video);
+
+        video.srcObject = canvas.captureStream(60);
+        await video.play();
+
+        let drawing = true;
+        (function paint() {                       // keep distinct frames flowing
+            if (!drawing) return;
+            ctx.fillStyle = `hsl(${(performance.now() / 4) % 360} 100% 50%)`;
+            ctx.fillRect(0, 0, 32, 32);
+            requestAnimationFrame(paint);
+        })();
+
+        const rows = [];
+        await new Promise(resolve => {
+            let n = 0;
+            video.requestVideoFrameCallback(function tick(now, meta) {
+                // `now` is the same clock/value an rAF callback would receive this turn
+                rows.push({
+                    displayLagMs:      meta.expectedDisplayTime - now,
+                    nowToSubmitMs:     meta.presentationTime    - now,
+                    submitToDisplayMs: meta.expectedDisplayTime - meta.presentationTime
+                });
+                ++n < frames ? video.requestVideoFrameCallback(tick) : resolve();
+            });
+        });
+
+        drawing = false;
+        video.srcObject.getTracks().forEach(t => t.stop());
+        video.remove();
+
+        const median = key => {
+            const v = rows.map(r => r[key]).sort((a, b) => a - b);
+            return v[Math.floor(v.length / 2)];
+        };
+
+        const displayLagMs = median('displayLagMs');
+        return {
+            samples: rows.length,
+            displayLagMs,                                   // T -> photons, per Chrome
+            nowToSubmitMs:     median('nowToSubmitMs'),     // T -> handed to compositor
+            submitToDisplayMs: median('submitToDisplayMs'), // compositor -> visible
+            depthInFrames: frameIntervalMs ? displayLagMs / frameIntervalMs : null
+        };
+    }
+    
     // SETTINGS ------------
     const rdkSettings = {
         rdkRadius: 300,
