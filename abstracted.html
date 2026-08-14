@@ -90,14 +90,14 @@
             depthInFrames: frameIntervalMs ? displayLagMs / frameIntervalMs : null
         };
     }
-    
+
     // SETTINGS ------------
     const rdkSettings = {
         rdkRadius: 300,
         nDots: 17, // nDots per colour
         dotRadiusPix: 3,
         dotColours: ['black', 'lightgrey'],
-        nTrials: 5,
+        nTrials: 10,
         nBlocks: 3
     }
 
@@ -187,10 +187,6 @@
             requestAnimationFrame(tick);
         });
 
-        // On deltas:
-        deltas.sort((a, b) => a - b);   // numeric sort; JS defaults to lexicographic
-        // console.log({ min: deltas[0], median: deltas[30], max: deltas[59] });
-
         // TODO: consider:
         // k = Math.round(interval / m)
         // sum(k) = true total vsyncs across the baseline
@@ -205,6 +201,11 @@
         const median = d[middleIndex];
 
 
+        // On deltas:
+        // deltas.sort((a, b) => a - b);   // numeric sort; JS defaults to lexicographic
+        // console.log({ min: deltas[0], median: deltas[30], max: deltas[59] });
+
+        // Other stats
         // (ts[ts.length-1] - ts[0]) / (ts.length)
         // calc error: Median Absolute Deviation - could be useful...
         // const mad = d.map(x => Math.abs(x - median)).sort((a, b) => a - b)[middleIndex];
@@ -442,7 +443,7 @@
 
         for(let i = 0; i < rdkSettings.nBlocks; i++){
             // NOTE: if you want displayed times consistent, we'd need to use durations that are multiples of the frame rate, or display a number of frames directly
-            const trialDurations = [1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900];
+            const trialDurations = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900];
             timeline.push({ // Nested timeline makes the frameInterval at the start of the block
                 timeline: [measureFrameRateTrial],
             })
