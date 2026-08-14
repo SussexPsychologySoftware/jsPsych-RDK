@@ -226,29 +226,7 @@
         async: true
     }
 
-    // RDK --------------------
-    function drawRDK(canvas, dotCoordinates, trialDuration){
-        const ctx = canvas.getContext('2d');
-        if(!trialRunning) { // just incase
-            stopRAF()
-            hideStimulus(canvas, ctx)
-            return;
-        }
-
-        const nColours = rdkSettings.dotColours.length
-        for(let c = 0; c < nColours; c++){
-            const colour = rdkSettings.dotColours[c]
-            for(let d = 0; d < rdkSettings.nDots; d++) {
-                const dotIndex = c*rdkSettings.nDots + d
-                drawPoint(ctx, dotCoordinates[dotIndex], rdkSettings.dotRadiusPix, colour, d+1);
-            }
-        }
-
-        // Arm frame loop - note stim is static so doesn't need redrawing
-        // Pass start time from here, as we want actual draw from previous frame defined above
-        // previousTs passed in as startTime for first go, so difference is 0
-        animationID = requestAnimationFrame(startTime => checkStimTime(startTime, startTime, canvas, ctx, trialDuration, 1))
-    }
+    // RDK -------------------
 
     function checkStimTime(previousTs, startTime, c, ctx, trialDuration, frameNumber){
         // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
@@ -309,11 +287,14 @@
         ctx.stroke();
     }
 
-    function drawPoint(ctx, dot, dotSize, colour='black', label){
-        // https://stackoverflow.com/questions/32681610/drawing-point-on-circle
+    function drawDots(ctx, dots, dotSize, colour, from, to, label) {
         ctx.fillStyle = colour;
         ctx.beginPath();
-        ctx.arc(dot.x, dot.y, dotSize, 0, 2 * Math.PI);
+        for (let i = from; i < to; i++) {
+            const dot = dots[i];
+            ctx.moveTo(dot.x + dotSize, dot.y);   // required, or arcs get joined by lines
+            ctx.arc(dot.x, dot.y, dotSize, 0, 2 * Math.PI);
+        }
         ctx.fill();
 
         // Optional label for debugging
@@ -326,6 +307,22 @@
     }
 
 
+    function drawRDK(ctx, dotCoordinates){
+        rdkSettings.dotColours.forEach((colour, c) => {
+            const from = c * rdkSettings.nDots;
+            drawDots(ctx, dotCoordinates, rdkSettings.dotRadiusPix, colour, from, from + rdkSettings.nDots);
+        });
+    }
+
+    function finishTrial(startTime, endTime, requestedDuration, frameNumber, callingFunction){
+        const durationError = (endTime-startTime)-requestedDuration
+        console.log(`Duration error: ${requestedDuration}, ${durationError.toFixed(4)}ms`, callingFunction)
+        jsPsych.finishTrial({
+            startTime,
+            endTime,
+            nFrames: frameNumber, // NOTE: number of RAF callbacks (browser frames), not = number of screen refreshes if any frames were dropped.
+        });
+    }
 
     // -*------------------------------------------------------
     // firstDraw - useful for static stim that don't need recalculating
