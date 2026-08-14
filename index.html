@@ -9,6 +9,7 @@
 </head>
 <body></body>
 <script>
+
     // SETTINGS ------------
     const rdkSettings = {
         rdkRadius: 300,
@@ -87,11 +88,17 @@
     // FRAME RATE --------------------
     const measureFrameInterval = async function (nFrames = 120, warmup = 20) {
         console.log('Measuring frame rate...')
+        // Note Chrome quantises DOMHighResTimeStamps to 0.1ms grid unless page is cross-origin isolated
+        // e.g. 16.6667 will be as 16.7 = 59.88 FPS when 60FS
+        // Must serve not-cross origin (GitHub Pages doesn't do this) for slightly better timestamps
+        // Don't be fooled by floating point issues giving many significant figures.
+
         // Store frames
         const ts = [];
         await new Promise(res => { // could probably do this with a loop somehow
             function tick(t) {
                 ts.push(t);
+                deltas.push(performance.now() - t);
                 ts.length < nFrames + warmup ? requestAnimationFrame(tick) : res();
             }
             requestAnimationFrame(tick);
@@ -124,6 +131,17 @@
     }
 
     // RDK --------------------
+    function drawDots(ctx, dots, dotSize, colour, from, to) {
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        for (let i = from; i < to; i++) {
+            const dot = dots[i];
+            ctx.moveTo(dot.x + dotSize, dot.y);   // required, or arcs get joined by lines
+            ctx.arc(dot.x, dot.y, dotSize, 0, 2 * Math.PI);
+        }
+        ctx.fill();
+    }
+
     function drawRDK(canvas, dotCoordinates, trialDuration){
         const ctx = canvas.getContext('2d');
         if(!trialRunning) { // just incase
@@ -132,14 +150,10 @@
             return;
         }
 
-        const nColours = rdkSettings.dotColours.length
-        for(let c = 0; c < nColours; c++){
-            const colour = rdkSettings.dotColours[c]
-            for(let d = 0; d < rdkSettings.nDots; d++) {
-                const dotIndex = c*rdkSettings.nDots + d
-                drawPoint(ctx, dotCoordinates[dotIndex], rdkSettings.dotRadiusPix, colour, d+1);
-            }
-        }
+        rdkSettings.dotColours.forEach((colour, c) => {
+            const from = c * rdkSettings.nDots;
+            drawDots(ctx, dotCoordinates, rdkSettings.dotRadiusPix, colour, from, from + rdkSettings.nDots);
+        });
 
         // Arm frame loop - note stim is static so doesn't need redrawing
         // Pass start time from here, as we want actual draw from previous frame defined above
