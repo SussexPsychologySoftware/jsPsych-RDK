@@ -362,8 +362,10 @@
             // Work in progress for inter-frame interval estimates TODO: rename to frameInterval, adaptiveWindow
             estimatedFrameInterval = null, // TODO: either pass in pre-calculated value, or pre-existing warmup frames array maybe?
             preTrialFrameIntervals = null, // TODO: remove? unsure it does much beyond just seeding everything at median estimate
-            adaptiveWindow = 20 // or use duration and frameRate to estimate?
-            // TODO: consider always round up or down on frames or guardFrames = 1.5
+            adaptiveWindow = 20, // or use duration and frameRate to estimate?
+            guardFrames = 1.5, // to always round up or down.
+            nFrames, // but note that screens differ in the wild - users can pre-calculate nFrames using refresh though.
+            frameCountOnly = true
         }={}) {
         // TODO: consider generalising to work with non-canvas stim, hiding with visibility or opacity if not
         // TODO: consider generalising to use requestVideoFrameCallback for videos too?
@@ -407,7 +409,7 @@
 
         function median(){
             // TODO: consider streaming median with two heaps or "sliding-window median", LeetCode 480
-            // TODO: consider accounting for dropped frames as above
+            // TODO: consider accounting for dropped frames with robustMean as above
             for(let i=0; i<adaptiveWindow; i++) sortedIntervals[i] = frameIntervals[i];
             sortedIntervals.sort((a, b) => a - b); // sort frame times
             // Return middle of array even if not full if no estimatedFrameInterval exists
@@ -432,8 +434,8 @@
 
             // console.log('Time since last execute: ', (timestamp - previousCallbackEndTimestamp).toFixed(4))
             // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
-            if (timestamp - startTime + (frameInterval * 1.5) < duration) {
-                onFrame(canvas, ctx, timestamp-animationStartTime, frameNumber)
+            if ((!nFrames && timestamp - startTime + (frameInterval * guardFrames) < duration) || (nFrames && frameNumber <= nFrames)) {
+                onFrame(canvas, ctx, duration, timestamp, frameNumber)
                 animationId = requestAnimationFrame(tick)
             } else {
                 hideStimulus(canvas, ctx)
@@ -457,7 +459,7 @@
         animationId = requestAnimationFrame((firstTimestamp) => {
             if(finished) { cancel(); return; }
             // First draw
-            onFrame(canvas, ctx, 0, frameNumber)
+            onFrame(canvas, ctx, duration, firstTimestamp, frameNumber)
             animationStartTime = firstTimestamp;
             lastFrameTime = firstTimestamp
             animationId = requestAnimationFrame(firstCallbackTimestamp => {
@@ -506,7 +508,8 @@
                 onFinish: finishTrial,
                 estimatedFrameInterval: blockFrameInterval.median,        // estimatedFrameInterval  (scalar fallback)
                 // preTrialFrameIntervals: blockFrameInterval.differences,
-                adaptiveWindow: 20 // or use duration and frameRate to estimate?
+                adaptiveWindow: 20, // or use duration and frameRate to estimate?
+                // nFrames: Math.round(trialDuration / blockFrameInterval.robustMean.toFixed(3))
             })
         },
         choices: "NO_KEYS",
