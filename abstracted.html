@@ -361,7 +361,7 @@
 
             // Work in progress for inter-frame interval estimates TODO: rename to frameInterval, adaptiveWindow
             estimatedFrameInterval = null, // TODO: either pass in pre-calculated value, or pre-existing warmup frames array maybe?
-            preTrialFrameIntervals = null,
+            preTrialFrameIntervals = null, // TODO: remove? unsure it does much beyond just seeding everything at median estimate
             adaptiveWindow = 20 // or use duration and frameRate to estimate?
             // TODO: consider always round up or down on frames or guardFrames = 1.5
         }={}) {
@@ -376,12 +376,18 @@
         let writeHead = 0;
         const sortedIntervals = new Array(adaptiveWindow);
 
-        if(preTrialFrameIntervals !== null){
-            for(let i=0; i<preTrialFrameIntervals.length; i++){
+        if (estimatedFrameInterval != null && adaptiveWindow > 0){
+            frameIntervals.fill(estimatedFrameInterval)
+            writeHead = adaptiveWindow;
+        }
+
+        if(preTrialFrameIntervals !== null && adaptiveWindow > 0) {
+            for (let i = 0; i < preTrialFrameIntervals.length; i++) {
                 frameIntervals[i % adaptiveWindow] = preTrialFrameIntervals[i]
             }
             writeHead = Math.min(preTrialFrameIntervals.length, adaptiveWindow)
         }
+
 
         // cancel function
         function cancel() {
@@ -411,9 +417,8 @@
         }
 
         function getFrameInterval(interval){
-            if((adaptiveWindow === 0 || writeHead < adaptiveWindow) && estimatedFrameInterval) return estimatedFrameInterval // Return pre-calculated estimate
-            else if(adaptiveWindow>0) return median(); // return rolling median
-            else return interval; // just return this interval if rolling median off and no pre-estimate provided - median doesn't break on this but more explicit
+            if (adaptiveWindow === 0) return estimatedFrameInterval ?? interval;
+            return median();
         }
 
         function tick(timestamp){
