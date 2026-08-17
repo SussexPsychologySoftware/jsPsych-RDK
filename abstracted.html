@@ -366,14 +366,13 @@
             guardFrames = 1.5, // to always round up or down.
             nFrames, // but note that screens differ in the wild - users can pre-calculate nFrames using refresh though.
             timeout = false,
-            visibilityChange = false,
+            onVisibilityChange = null
         }={}) {
         // TODO: consider generalising to work with non-canvas stim, hiding with visibility or opacity if not
         // TODO: consider generalising to use requestVideoFrameCallback for videos too?
-        let frameInterval = estimatedFrameInterval, finished = false, frameNumber = 0, droppedFrames = 0, ctx = canvas.getContext('2d');
-        let startTime = null, animationStartTime = null, previousCallbackEndTimestamp = null, lastFrameTime = null;
+        let frameInterval = estimatedFrameInterval, finished = false, frameNumber = 0, ctx = canvas.getContext('2d');
+        let startTime = null, animationStartTime = null, lastFrameTime = null, previousCallbackEndTimestamp = null;
         let animationId = null, timeoutId = null;
-        const interruptions = []
 
         // frame interval arrays for median calculation
         const frameIntervals = new Array(adaptiveWindow);
@@ -400,28 +399,34 @@
             if (timeoutId) clearTimeout(timeoutId);
             animationId = null;
             timeoutId = null;
-            document.removeEventListener('visibilitychange', onVisibilityChange);
-            // hideStimulus(canvas, ctx)
+            document.removeEventListener('visibilitychange', visibilityChangeHandler);
+            window.removeEventListener('blur', visibilityChangeHandler);
+            window.removeEventListener('focus', visibilityChangeHandler);
+            hideStimulus(canvas, ctx)
         }
 
         function runTimeoutBackup(startTime){
             timeoutId = setTimeout(() => {
-                if(finished) { return }
+                if(finished) return
                 cancel()
                 const endTime = performance.now();
-                if(onFinish) onFinish(startTime, endTime, duration, frameNumber, 'setTimeout', droppedFrames)
+                if(onFinish) onFinish(startTime, endTime, duration, frameNumber, 'setTimeout')
             }, duration+(frameInterval*2.5)) // frameInterval may be null though
         }
 
-        function onVisibilityChange(event) {
-            interruptions.push({
+        function visibilityChangeHandler(event) {
+            // Enough info that user can end trial if they want
+            if(onVisibilityChange) onVisibilityChange({
+                event,
                 type: event.type,
+                eventTimeStamp: event.timeStamp,
                 documentVisibilityState: document.visibilityState,
                 documentHiddenState: document.hidden,
-                timeStamp: event.timeStamp,
-                elapsed: !startTime ? null : event.timeStamp-startTime
-            });
-            console.log(interruptions)
+                trialStartTime: startTime,
+                currentTime: performance.now(),
+                trialDuration: duration,
+                frameNumber
+            })
             // TODO: decide what to do with this information?
             // cancel();                       // stop now; don't rely on rAF resuming
             // if(onFinish) onFinish(startTime, performance.now(), duration, frameNumber, 'visibilityHidden', droppedFrames);
@@ -457,8 +462,6 @@
             const currentFrameInterval = timestamp-lastFrameTime
             if (frameInterval == null || currentFrameInterval < frameInterval * 2.5) {
                 pushInterval(currentFrameInterval);
-            } else {
-                droppedFrames++; // record it instead of polluting the window
             }
             frameInterval = getFrameInterval(currentFrameInterval)
 
@@ -476,12 +479,12 @@
                     animationId = null;
                     // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint, incase causes overrun
                     setTimeout(() => {
-                        onFinish(startTime, endTime, duration, frameNumber, 'rAF', droppedFrames)
+                        onFinish(startTime, endTime, duration, frameNumber, 'rAF')
                     }, 0)
                 });
             }
             lastFrameTime = timestamp // placement of this? could carry through in args?
-            previousCallbackEndTimestamp = performance.now(); // TODO: could function as some measure of likelihood frame pain was reached? maybe alongside a rVFC?
+            // previousCallbackEndTimestamp = performance.now(); // TODO: could function as some measure of likelihood frame pain was reached? maybe alongside a rVFC?
             // console.log('Time to execute: ', (previousCallbackEndTimestamp - timestamp).toFixed(4))
         }
 
@@ -500,14 +503,13 @@
             // TODO: backup for RAF onBlur issue, although why end trial user can't see? may as well record issue
             //  but need to distinguish code execution lag from blur
 
-
-            previousCallbackEndTimestamp = performance.now();
+            // previousCallbackEndTimestamp = performance.now();
         })
 
-        if(visibilityChange) {
-            document.addEventListener('visibilitychange', onVisibilityChange);
-            window.addEventListener('blur', onVisibilityChange);
-            window.addEventListener('focus', onVisibilityChange);
+        if(onVisibilityChange) {
+            document.addEventListener('visibilitychange', visibilityChangeHandler);
+            window.addEventListener('blur', visibilityChangeHandler);
+            window.addEventListener('focus', visibilityChangeHandler);
         }
 
         return cancel;
