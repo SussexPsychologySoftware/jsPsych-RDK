@@ -17,7 +17,9 @@
         dotRadiusPix: 3,
         dotColours: ['black', 'lightgrey'],
         nTrials: 5,
-        nBlocks: 3
+        nBlocks: 3,
+        fixationSize: 10,
+        fixationThickness: 2,
     }
 
 
@@ -32,9 +34,6 @@
     function getRandomRDKCoordinates() {
         // size of circle, the colour and size of dots, length of time
         const rdkCentre = {x: rdkSettings.rdkRadius, y: rdkSettings.rdkRadius};
-        // DEBUGGING - draw outline of rdk circle and outer box
-        // drawCanvasOutline(c, ctx) // DEBUG
-        // drawRDKOutline(ctx, rdkCentre, rdkRadius); //DEBUG
 
         const dots = [] // Store dot coordinates to check intersection
         for(let i = 0; i < rdkSettings.nDots*rdkSettings.dotColours.length; i++){
@@ -151,6 +150,14 @@
             return;
         }
 
+        // DEBUGGING - draw outline of rdk circle and outer box
+        // drawCanvasOutline(canvas, ctx) // DEBUG
+        // drawRDKOutline(ctx, rdkSettings.rdkRadius); //DEBUG
+
+        // Fixation cross
+        drawFixationCross(canvas, ctx, rdkSettings.rdkRadius, rdkSettings.fixationSize, rdkSettings.fixationThickness);
+
+        // Dots
         rdkSettings.dotColours.forEach((colour, c) => {
             const from = c * rdkSettings.nDots;
             drawDots(ctx, dotCoordinates, rdkSettings.dotRadiusPix, colour, from, from + rdkSettings.nDots);
@@ -213,9 +220,9 @@
     }
 
     // For debugging - make sure dots are inside circle
-    function drawRDKOutline(ctx, centre, radius){
+    function drawRDKOutline(ctx, radius){
         ctx.beginPath();
-        ctx.arc(centre.x, centre.y, radius, 0, 2 * Math.PI);
+        ctx.arc(radius, radius, radius, 0, 2 * Math.PI);
         ctx.stroke();
     }
 
@@ -223,6 +230,26 @@
         ctx.beginPath();
         ctx.rect(0, 0, c.width, c.height);
         ctx.stroke();
+    }
+
+    function drawFixationCross(canvas, ctx, radius, fixationSize=10, lineWidth=2) {
+        ctx.lineWidth = lineWidth;
+        const middle = canvas.width/2 // needs x and y if canvas isn't square fit to RDK
+        // Draw centre cross
+        ctx.beginPath();
+        ctx.moveTo(middle-fixationSize, middle)
+        ctx.lineTo(middle+fixationSize, middle)
+        ctx.stroke();
+        ctx.moveTo(middle, middle-fixationSize)
+        ctx.lineTo(middle, middle+fixationSize)
+        ctx.stroke();
+
+        // Text version:
+        // ctx.fillStyle = 'black';
+        // ctx.font = "48px serif";
+        // const crossText = "+";
+        // let text = ctx.measureText(crossText);
+        // ctx.fillText(crossText, canvas.width/2-text.width/2, canvas.height/2+text.width/2);
     }
 
     function drawPoint(ctx, dot, dotSize, colour='black', label){
