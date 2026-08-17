@@ -20,6 +20,7 @@
         nBlocks: 3,
         fixationSize: 10,
         fixationThickness: 2,
+        fixationColor: 'green',
     }
 
 
@@ -38,7 +39,7 @@
         const dots = [] // Store dot coordinates to check intersection
         for(let i = 0; i < rdkSettings.nDots*rdkSettings.dotColours.length; i++){
             // Get new non-overlapping dot
-            let newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius);
+            let newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius-rdkSettings.dotRadiusPix); // rdk radius - dot radius so dot circumference all within rdk
             let detectedIntersections = 0
             while (intersectsExistingDot(newDot, dots, rdkSettings.dotRadiusPix)) {
                 detectedIntersections++
@@ -57,7 +58,6 @@
     // Create array of random dot coordinates
     function getRandomDotCoordinates(centre, radius){
         const randomRadians = Math.random() * 2 * Math.PI;
-        // TODO: note dot centre is within circle bounds - so can poke but by dot radius;
         const randomDistance = Math.sqrt(Math.random()); // 0=centre, 1=circumference
         return {
             x: centre.x + radius * Math.cos(randomRadians) * randomDistance,
@@ -155,7 +155,7 @@
         // drawRDKOutline(ctx, rdkSettings.rdkRadius); //DEBUG
 
         // Fixation cross
-        drawFixationCross(canvas, ctx, rdkSettings.rdkRadius, rdkSettings.fixationSize, rdkSettings.fixationThickness);
+        drawFixationCross(canvas, ctx, rdkSettings.rdkRadius, rdkSettings.fixationSize, rdkSettings.fixationThickness, rdkSettings.fixationColor);
 
         // Dots
         rdkSettings.dotColours.forEach((colour, c) => {
@@ -232,8 +232,9 @@
         ctx.stroke();
     }
 
-    function drawFixationCross(canvas, ctx, radius, fixationSize=10, lineWidth=2) {
+    function drawFixationCross(canvas, ctx, radius, fixationSize=10, lineWidth=2, colour='green') {
         ctx.lineWidth = lineWidth;
+        ctx.strokeStyle = colour;
         const middle = canvas.width/2 // needs x and y if canvas isn't square fit to RDK
         // Draw centre cross
         ctx.beginPath();
