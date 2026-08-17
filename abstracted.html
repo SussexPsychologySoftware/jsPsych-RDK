@@ -18,11 +18,10 @@
      *    visible, not a measurement. If Chrome's model omits a stage (e.g. an OS
      *    compositor pass), this omits it too.
      *  - This is the video element's path. A canvas captureStream source keeps it
-     *    closer to your canvas path than a decoded file would (no hardware overlay
+     *    closer to canvas path than a decoded file would (no hardware overlay
      *    / direct-scanout shortcuts), but it is still not a canvas measurement.
      *  - The video must be rendered. display:none or zero size can suppress callbacks.
-     *  - Ground truth needs a photodiode. This is a sanity check, not a calibration.
-     *
+     *  - Ground truth needs a photodiode.
      *
      *  USEAGE:
      *  probePipelineDepth({ frameIntervalMs: 16.667 }).then(console.log)
@@ -105,10 +104,10 @@
 
     // GLOBALS ------------
     let frameInterval;
-    let animationID;
     let trialRunning = false; // This variable is slight overkill but double protects against requestAnimationFrame trying to paint after trial ends.
 
     // DEFINE TRIALS - pre-calculate dot coordinates ------------
+
     // TODO: pre-draw on canvas and visibility change during trial or graphics blit to image?
     function getRandomRDKCoordinates() {
         // size of circle, the colour and size of dots, length of time
@@ -120,13 +119,13 @@
         const dots = [] // Store dot coordinates to check intersection
         for(let i = 0; i < rdkSettings.nDots*rdkSettings.dotColours.length; i++){
             // Get new non-overlapping dot
-            let newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius);
+            let newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius-rdkSettings.dotRadiusPix);
             let detectedIntersections = 0
             while (intersectsExistingDot(newDot, dots, rdkSettings.dotRadiusPix)) {
                 detectedIntersections++
                 if(detectedIntersections > 50) { // TODO: Consider removing this check - but it protects against a page crash when trying things out
                     console.error(`Detected ${detectedIntersections} intersections with existing dots, exiting to avoid crash - maybe dots can't fit inside circle?`)
-                    throw new Error();
+                    throw new Error('Dots cannot fit inside circle');
                 }
                 newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius);
             }
@@ -174,43 +173,53 @@
         // Must serve not-cross origin (GitHub Pages doesn't do this) for slightly better timestamps
         // Don't be fooled by floating point issues giving many significant figures.
 
-
         // Store frames
         const ts = [];
-        const deltas = []
+        const executionLag = []; // these are a main-thread scheduling lag / render depth proxy by seeing when callback is actually run
+        let frameCountGuard = 0;
+        let nSamples = 0;
         await new Promise(res => { // could probably do this with a loop somehow
             function tick(t) {
-                ts.push(t);
-                deltas.push(performance.now() - t);
-                ts.length < nFrames + warmup ? requestAnimationFrame(tick) : res();
+                if(frameCountGuard < warmup + nFrames){
+                    if(frameCountGuard >= warmup){
+                        ts.push(t);
+                        executionLag.push(performance.now() - t);
+                        nSamples++;
+                    }
+                    requestAnimationFrame(tick)
+                } else res()
+                frameCountGuard++
             }
             requestAnimationFrame(tick);
         });
 
-        // TODO: consider:
-        // k = Math.round(interval / m)
-        // sum(k) = true total vsyncs across the baseline
-        //interval = (ts[last] − ts[0]) / K
-
-
         // Get median
-        const d = [];
-        for (let i = warmup+1; i < ts.length; i++) d.push(ts[i] - ts[i-1]); // calculate frame time differences
-        d.sort((a, b) => a - b); // sort frame times
-        const middleIndex = Math.floor(d.length / 2)
-        const median = d[middleIndex];
+        const differences = [];
+        for (let i=1; i < ts.length; i++) differences.push(ts[i] - ts[i-1]); // calculate frame time differences
+        console.log(differences)
+        differences.sort((a, b) => a - b); // sort frame times
+        const middleIndex = Math.floor(differences.length / 2)
+        const median = differences[middleIndex];
 
+        // TESTING OTHER STATS
+        // Mean
+        const mean = (ts[ts.length-1]-ts[0]) / (ts.length-1) // n-1 gaps between timestamps
 
-        // On deltas:
-        // deltas.sort((a, b) => a - b);   // numeric sort; JS defaults to lexicographic
-        // console.log({ min: deltas[0], median: deltas[30], max: deltas[59] });
+        // Robust mean - taking into account double gaps where a frame was lost
+        let nIntervals = 0;
+        for (let i=1; i < ts.length; i++) nIntervals += Math.round((ts[i] - ts[i-1]) / median)
+        const robustMean = (ts[ts.length-1]-ts[0]) / nIntervals
 
+        // Median Absolute Deviation
+        // should be about .1 if quantisation on
+        const medianAbsoluteDeviation = differences.map(x => Math.abs(x - median)).sort((a, b) => a - b)[middleIndex];
+
+        // On executionLag:
+        executionLag.sort((a, b) => a - b);   // numeric sort; JS defaults to lexicographic
+        // console.log({ min: executionLag[0], median: executionLag[middleIndex], max: executionLag[executionLag.length-1] });
         // Other stats
-        // (ts[ts.length-1] - ts[0]) / (ts.length)
-        // calc error: Median Absolute Deviation - could be useful...
-        // const mad = d.map(x => Math.abs(x - median)).sort((a, b) => a - b)[middleIndex];
 
-        const frameStats = { median, FPS: 1000 / median };
+        const frameStats = { median, FPS: 1000 / median, mean, robustMean, medianAbsoluteDeviation, renderedFrames, estimatedVSyncs: nIntervals, differences, maxExecutionLag: executionLag[executionLag.length-1]};
         console.log(frameStats);
         return frameStats;
     }
@@ -228,52 +237,6 @@
     }
 
     // RDK -------------------
-
-    function checkStimTime(previousTs, startTime, c, ctx, trialDuration, frameNumber){
-        // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
-
-        if (!trialRunning) { animationID = undefined; return; }
-        const elapsedTimeAtNextFrame = (previousTs + frameInterval.median) - startTime;
-
-        if (animationID && elapsedTimeAtNextFrame < trialDuration - frameInterval.median/2) {
-            animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx, trialDuration, ++frameNumber))
-        } else {
-            // Run the clear and then request another frame to record the actual time the clear was rendered and record that.
-            hideStimulus(c, ctx);                 // paint the clear on THIS frame (K)
-            animationID = requestAnimationFrame(endTime => {   // fires on frame K+1 = clear becomes visible
-                animationID = undefined
-                trialRunning = false
-                const displayedDurationMs = endTime - startTime
-                const displayedDifferenceMs = displayedDurationMs - trialDuration
-                // TODO: could log expected error...
-                // const expectedDurationMs = Math.round(trialDuration/frameInterval.median)*frameInterval.median // Nearest whole frame
-                // TODO: consider wrapping in setTimeout(() => {}, 0)
-                jsPsych.finishTrial({
-                    requestedDurationMs: trialDuration,
-                    startTime,
-                    endTime,
-                    displayedDurationMs,
-                    displayedDifferenceMs,
-                    nFrames: frameNumber, // NOTE: number of RAF callbacks (browser frames), not = number of screen refreshes if any frames were dropped.
-                    frameIntervalMs: frameInterval.median,
-                    fps: frameInterval.FPS
-                });
-                console.log(`Duration requested: ${trialDuration}ms, recorded: ${displayedDurationMs}ms, difference: ${displayedDifferenceMs}ms. N Frames ${frameNumber}`)
-            });
-            // console.log('Canvas cleared by Request Animation Frame')
-        }
-    }
-
-    function stopRAF() {
-        if (animationID) {
-            cancelAnimationFrame(animationID)
-            animationID = undefined
-        }
-    }
-
-    function hideStimulus(canvas, ctx){
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
 
     // For debugging - make sure dots are inside circle
     function drawRDKOutline(ctx, centre, radius){
@@ -295,20 +258,20 @@
             const dot = dots[i];
             ctx.moveTo(dot.x + dotSize, dot.y);   // required, or arcs get joined by lines
             ctx.arc(dot.x, dot.y, dotSize, 0, 2 * Math.PI);
+            // Optional label for debugging
+            if(label !== undefined){
+                ctx.font = `${dotSize*2}px sans-serif`;
+                ctx.fillStyle = 'lightgrey'
+                const textSize = ctx.measureText(label).width/2;
+                ctx.fillText(label, dot.x-textSize, dot.y+textSize); //dot.x-(textSize.width/2), dot.y-(textSize.height/2)
+            }
         }
         ctx.fill();
-
-        // Optional label for debugging
-        // if(label !== undefined){
-        //     ctx.font = `${dotSize*2}px sans-serif`;
-        //     ctx.fillStyle = 'lightgrey'
-        //     const textSize = ctx.measureText(label).width/2;
-        //     ctx.fillText(label, dot.x-textSize, dot.y+textSize); //dot.x-(textSize.width/2), dot.y-(textSize.height/2)
-        // }
     }
 
 
-    function drawRDK(ctx, dotCoordinates){
+    function drawRDK(ctx, dotCoordinates, frameNumber){
+        if(frameNumber > 0) return
         rdkSettings.dotColours.forEach((colour, c) => {
             const from = c * rdkSettings.nDots;
             drawDots(ctx, dotCoordinates, rdkSettings.dotRadiusPix, colour, from, from + rdkSettings.nDots);
@@ -332,16 +295,17 @@
     function runRAFLoop(
         canvas,
         duration,
-        firstDraw, // (ctx, canvas) => void
-        onFinish, // (data) => void
-        onFrame = null, // (ctx, canvas, info) => void  useful for animation and recording trial times; omit for static stimuli
-        frameInterval = null,
-        hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height),
-        ctx = canvas.getContext('2d'),
+        onFrame, // drawing function called each frame - note timestamps are off from startTime and endTime. pass empty to just time.
+        onFinish = null, // (data) => void
+        frameInterval = null, // TODO: consider rolling median on ring buffer work array, or allowing passed in value. consider VFR.
+        hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height), // User could do visibility or opacity
     ) {
-        let finished = false, frameNumber = 0;
-        let startTime = null, previousCallbackEndTimestamp = null, lastFrameTime = null;
+        // TODO: consider generalising to work with non-canvas stim, hiding with visibility or opacity if not
+        // TODO: consider generalising to use requestVideoFrameCallback for videos too?
+        let finished = false, frameNumber = 0, ctx = canvas.getContext('2d');
+        let startTime = null, animationStartTime = null, previousCallbackEndTimestamp = null, lastFrameTime = null;
         let animationId = null, timeoutId = null;
+
 
         function cancel() {
             finished = true;
@@ -349,20 +313,19 @@
             if (timeoutId) clearTimeout(timeoutId);
             animationId = null;
             timeoutId = null;
+            // hideStimulus(canvas, ctx)
         }
 
         function tick(timestamp){
             if(finished) { cancel(); return; }
-            frameInterval = timestamp-lastFrameTime // measured each frame - TODO: consider median or allowing passed in value
+            frameInterval = timestamp-lastFrameTime // measured each frame
+            lastFrameTime = timestamp // placement of this? could carry through in args?
             frameNumber++;
             // console.log('Time since last execute: ', (timestamp - previousCallbackEndTimestamp).toFixed(4))
             // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
             if (timestamp - startTime + (frameInterval * 1.5) < duration) {
-                animationId = requestAnimationFrame(nextTimestamp => {
-                    lastFrameTime = timestamp // TODO: unsure where best to put this?
-                    if(onFrame) onFrame(canvas, ctx, duration, startTime, nextTimestamp, frameNumber)
-                    tick(nextTimestamp)
-                })
+                onFrame(canvas, ctx, timestamp-animationStartTime, frameNumber)
+                animationId = requestAnimationFrame(tick)
             } else {
                 hideStimulus(canvas, ctx)
                 animationId = requestAnimationFrame(endTime => {   // clear becomes visible when this fires
@@ -370,25 +333,29 @@
                     finished = true;
                     animationId = null;
                     // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint, incase causes overrun
-                    setTimeout(() => {
-                        onFinish(startTime, endTime, duration, frameNumber, 'rAF')
-                    }, 0)
+                    if(onFinish){
+                        setTimeout(() => {
+                            onFinish(startTime, endTime, duration, frameNumber, 'rAF')
+                        }, 0)
+                    }
                 });
             }
-            previousCallbackEndTimestamp = performance.now();
+            previousCallbackEndTimestamp = performance.now(); // TODO: could function as some measure of likelihood frame pain was reached? maybe alongside a rVFC?
             // console.log('Time to execute: ', (previousCallbackEndTimestamp - timestamp).toFixed(4))
         }
 
         animationId = requestAnimationFrame((firstTimestamp) => {
             if(finished) { cancel(); return; }
-            if(firstDraw) firstDraw(canvas, ctx) // Run first draw - pass firstTimestamp or duration?
-            animationId = requestAnimationFrame(timestamp => {
-                startTime = timestamp;
-                lastFrameTime = firstTimestamp
-                tick(timestamp)
+            // First draw
+            onFrame(canvas, ctx, 0, frameNumber)
+            animationStartTime = firstTimestamp;
+            lastFrameTime = firstTimestamp
+            animationId = requestAnimationFrame(firstCallbackTimestamp => {
+                startTime = firstCallbackTimestamp;
+                tick(firstCallbackTimestamp)
             })
 
-            // TODO: backup for RAF onBlur issue, although why end trial user can't see? may as well record issue - b
+            // TODO: backup for RAF onBlur issue, although why end trial user can't see? may as well record issue
             //  but need to distinguish code execution lag from blur
 
             // timeoutId = setTimeout(() => {
@@ -422,17 +389,17 @@
             // const dots = getRandomRDKCoordinates() // Note: use this if you want to just calculate dot coordinates before each trial
             const dots = jsPsych.evaluateTimelineVariable('dotCoordinates') //https://www.jspsych.org/v8/reference/jspsych/#description_4
             const trialDuration = jsPsych.evaluateTimelineVariable('trialDuration')
-            const cancel = runRAFLoop(c, trialDuration, (canvas, ctx)=>{drawRDK(ctx, dots)}, finishTrial)
+            const cancel = runRAFLoop(c, trialDuration, (canvas, ctx, duration, firstTimestamp, frameNumber)=>{drawRDK(ctx, dots, frameNumber)}, finishTrial)
         },
         choices: "NO_KEYS",
         // https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
         // trial_duration: function() {return jsPsych.evaluateTimelineVariable('trialDuration') + rdkSettings.overshootAmountMs},
         on_start: () => {
-            trialRunning = true
+            trialRunning = true //TODO: Nice to have this global but breaks containment from runRAFLoop and slightly duplicates `finished` from there
         },
         on_finish: () => {
             trialRunning = false;
-            stopRAF();
+            // stopRAF();
             // console.log('jsPsych ended trial');
         }}
 
