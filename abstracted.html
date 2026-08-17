@@ -356,7 +356,7 @@
             canvas,
             duration,
             onFrame, // drawing function called each frame - note timestamps are off from startTime and endTime. pass empty to just time.
-            onFinish = null, // (data) => void
+            onFinish, // (data) => void
             hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height), // User could do visibility or opacity
 
             // Work in progress for inter-frame interval estimates TODO: rename to frameInterval, adaptiveWindow
@@ -365,7 +365,7 @@
             adaptiveWindow = 20, // or use duration and frameRate to estimate?
             guardFrames = 1.5, // to always round up or down.
             nFrames, // but note that screens differ in the wild - users can pre-calculate nFrames using refresh though.
-            frameCountOnly = true
+            timeout = false
         }={}) {
         // TODO: consider generalising to work with non-canvas stim, hiding with visibility or opacity if not
         // TODO: consider generalising to use requestVideoFrameCallback for videos too?
@@ -423,6 +423,15 @@
             return median();
         }
 
+        function runTimeoutBackup(startTime){
+            timeoutId = setTimeout(() => {
+                if(finished) { return }
+                cancel()
+                const endTime = performance.now();
+                if(onFinish) onFinish(startTime, endTime, duration, frameNumber, 'setTimeout')
+            }, duration+(frameInterval*2)) // frameInterval may be null though
+        }
+
         function tick(timestamp){
             if(finished) { cancel(); return; }
             frameNumber++;
@@ -444,11 +453,9 @@
                     finished = true;
                     animationId = null;
                     // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint, incase causes overrun
-                    if(onFinish){
-                        setTimeout(() => {
-                            onFinish(startTime, endTime, duration, frameNumber, 'rAF')
-                        }, 0)
-                    }
+                    setTimeout(() => {
+                        onFinish(startTime, endTime, duration, frameNumber, 'rAF')
+                    }, 0)
                 });
             }
             lastFrameTime = timestamp // placement of this? could carry through in args?
@@ -464,18 +471,13 @@
             lastFrameTime = firstTimestamp
             animationId = requestAnimationFrame(firstCallbackTimestamp => {
                 startTime = firstCallbackTimestamp;
+                if(timeout) runTimeoutBackup(startTime)
                 tick(firstCallbackTimestamp)
             })
 
             // TODO: backup for RAF onBlur issue, although why end trial user can't see? may as well record issue
             //  but need to distinguish code execution lag from blur
 
-            // timeoutId = setTimeout(() => {
-            //     if(finished) { return }
-            //     cancel()
-            //     const endTime = performance.now();
-            //     onFinish(firstTimestamp, endTime, duration, frameNumber, 'setTimeout')
-            // }, duration+(frameInterval*3)) // frameInterval may be null though
 
             previousCallbackEndTimestamp = performance.now();
         })
