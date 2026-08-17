@@ -359,11 +359,11 @@
             onFinish = null, // (data) => void
             hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height), // User could do visibility or opacity
 
-            // Work in progress for inter-frame interval estimates
+            // Work in progress for inter-frame interval estimates TODO: rename to frameInterval, adaptiveWindow
             estimatedFrameInterval = null, // TODO: either pass in pre-calculated value, or pre-existing warmup frames array maybe?
             preTrialFrameIntervals = null,
-            nFramesForIntervalEstimate = 20 // or use duration and frameRate to estimate?
-            // TODO: consider always round up or down on frames
+            adaptiveWindow = 20 // or use duration and frameRate to estimate?
+            // TODO: consider always round up or down on frames or guardFrames = 1.5
         }={}) {
         // TODO: consider generalising to work with non-canvas stim, hiding with visibility or opacity if not
         // TODO: consider generalising to use requestVideoFrameCallback for videos too?
@@ -372,15 +372,15 @@
         let animationId = null, timeoutId = null;
 
         // frame interval arrays for median calculation
-        const frameIntervals = new Array(nFramesForIntervalEstimate);
+        const frameIntervals = new Array(adaptiveWindow);
         let writeHead = 0;
-        const sortedIntervals = new Array(nFramesForIntervalEstimate);
+        const sortedIntervals = new Array(adaptiveWindow);
 
         if(preTrialFrameIntervals !== null){
             for(let i=0; i<preTrialFrameIntervals.length; i++){
-                frameIntervals[i % nFramesForIntervalEstimate] = preTrialFrameIntervals[i]
+                frameIntervals[i % adaptiveWindow] = preTrialFrameIntervals[i]
             }
-            writeHead = Math.min(preTrialFrameIntervals.length, nFramesForIntervalEstimate)
+            writeHead = Math.min(preTrialFrameIntervals.length, adaptiveWindow)
         }
 
         // cancel function
@@ -395,24 +395,24 @@
 
         // Calculating median
         function pushInterval(interval){
-            frameIntervals[writeHead % nFramesForIntervalEstimate] = interval
+            frameIntervals[writeHead % adaptiveWindow] = interval
             writeHead++
         }
 
         function median(){
             // TODO: consider streaming median with two heaps or "sliding-window median", LeetCode 480
             // TODO: consider accounting for dropped frames as above
-            for(let i=0; i<nFramesForIntervalEstimate; i++) sortedIntervals[i] = frameIntervals[i];
+            for(let i=0; i<adaptiveWindow; i++) sortedIntervals[i] = frameIntervals[i];
             sortedIntervals.sort((a, b) => a - b); // sort frame times
             // Return middle of array even if not full if no estimatedFrameInterval exists
-            const filledArrayIndex = Math.min(writeHead, nFramesForIntervalEstimate)
+            const filledArrayIndex = Math.min(writeHead, adaptiveWindow)
             const middle = Math.floor(filledArrayIndex/2)
             return sortedIntervals[middle];
         }
 
         function getFrameInterval(interval){
-            if((nFramesForIntervalEstimate === 0 || writeHead < nFramesForIntervalEstimate) && estimatedFrameInterval) return estimatedFrameInterval // Return pre-calculated estimate
-            else if(nFramesForIntervalEstimate>0) return median(); // return rolling median
+            if((adaptiveWindow === 0 || writeHead < adaptiveWindow) && estimatedFrameInterval) return estimatedFrameInterval // Return pre-calculated estimate
+            else if(adaptiveWindow>0) return median(); // return rolling median
             else return interval; // just return this interval if rolling median off and no pre-estimate provided - median doesn't break on this but more explicit
         }
 
@@ -501,7 +501,7 @@
                 onFinish: finishTrial,
                 estimatedFrameInterval: blockFrameInterval.median,        // estimatedFrameInterval  (scalar fallback)
                 // preTrialFrameIntervals: blockFrameInterval.differences,
-                nFramesForIntervalEstimate: 20 // or use duration and frameRate to estimate?
+                adaptiveWindow: 20 // or use duration and frameRate to estimate?
             })
         },
         choices: "NO_KEYS",
