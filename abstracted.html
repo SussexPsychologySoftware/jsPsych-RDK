@@ -103,7 +103,7 @@
 
 
     // GLOBALS ------------
-    let frameInterval;
+    let blockFrameInterval;
     let trialRunning = false; // This variable is slight overkill but double protects against requestAnimationFrame trying to paint after trial ends.
 
     // DEFINE TRIALS - pre-calculate dot coordinates ------------
@@ -219,14 +219,14 @@
         // console.log({ min: executionLag[0], median: executionLag[middleIndex], max: executionLag[executionLag.length-1] });
         // Other stats
 
-        const frameStats = { median, FPS: 1000 / median, mean, robustMean, medianAbsoluteDeviation, renderedFrames, estimatedVSyncs: nIntervals, differences, maxExecutionLag: executionLag[executionLag.length-1]};
+        const frameStats = { median, FPS: 1000 / median, mean, robustMean, medianAbsoluteDeviation, nSamples, nIntervals, differences, maxExecutionLag: executionLag[executionLag.length-1]};
         console.log(frameStats);
         return frameStats;
     }
 
     const setFrameInterval = async function (done) {
         const res = await measureFrameInterval();
-        frameInterval = res;
+        blockFrameInterval = res;
         done(res);
     }
 
@@ -288,25 +288,102 @@
         });
     }
 
+
+    // PRE-RENDERING DOTS - NOTE need to test, fully believe this is actually slower - MAYBE a pre-render on the entire thing would be quicker though.
+    // general shape if thinking about pre-rendering and blitting
+    // async function makeDotSprite(colour, rPix, dpr = devicePixelRatio) {
+    //     const s = Math.ceil(rPix * 2 * dpr) + 2;           // supersample to DPR
+    //     const off = new OffscreenCanvas(s, s);             // no Worker — just a buffer
+    //     const c = off.getContext('2d');
+    //     c.fillStyle = colour;
+    //     c.beginPath();
+    //     c.arc(s / 2, s / 2, rPix * dpr, 0, 2 * Math.PI);
+    //     c.fill();
+    //     return await createImageBitmap(off);               // decoded off-thread, cached & reused
+    // }
+
+    // onset — blit sprites (reuses the cached bitmaps, does not consume them):
+    // Stateless: stamp each dot's sprite at its current position. No motion logic here.
+    // function drawField(ctx, dots, sprites) {
+    //     for (const d of dots) {
+    //         const s = sprites[d.c]; // Store colour with dots and then store sprites in array
+    //         ctx.drawImage(s.bitmap, d.x - s.r, d.y - s.r, s.r * 2, s.r * 2);
+    //     }
+    // }
+
+    // function advanceDots(dots, motion, aperture) {
+    //     const { cx, cy, R } = aperture;                 // circular aperture
+    //     for (const d of dots) {
+    //         if (d.signal) {                             // coherent "signal" dots share one velocity
+    //             d.x += motion.vx;
+    //             d.y += motion.vy;
+    //         } else {                                    // "noise" dots — random walk (one of several standard schemes)
+    //             const a = Math.random() * 2 * Math.PI;
+    //             d.x += Math.cos(a) * motion.speed;
+    //             d.y += Math.sin(a) * motion.speed;
+    //         }
+    //         const dx = d.x - cx, dy = d.y - cy;         // re-entry: a dot leaving the aperture comes back in
+    //         if (dx * dx + dy * dy > R * R) {            // (here: reflect through centre; limited-lifetime/random-replot also common)
+    //             d.x = cx - dx;
+    //             d.y = cy - dy;
+    //         }
+    //     }
+    // }
+
+    // STATIC VERSION
+    // // setup (once, awaited, during ISI):
+    // const sprites = await Promise.all(
+    //     rdkSettings.dotColours.map(col => makeDotSprite(col, rdkSettings.dotRadiusPix))
+    // );
+    // const dots = getRandomRDKCoordinates();   // each dot given a .c colour index
+    //
+    // // in the trial — this is your onFrame:
+    // runRAFLoop(canvas, trialDuration, (canvas, ctx, t, frameNumber) => {
+    //     if (frameNumber === 0) drawField(ctx, dots, d => sprites[d.c]);  // draw once; frames 1..N are no-ops
+    // }, finishTrial);
+
+    // MOVING VERSION
+    // // setup adds velocity + a signal/noise flag per dot; sprites built exactly as before.
+    // runRAFLoop(canvas, trialDuration, (canvas, ctx, t, frameNumber) => {
+    //     ctx.clearRect(0, 0, wCss, hCss);           // wipe previous frame
+    //     advanceDots(dots, motion, aperture);       // evolve state — the actual RDK algorithm
+    //     drawField(ctx, dots, d => sprites[d.c]);    // blit the SAME sprites at NEW positions
+    // }, finishTrial);
+
+
     // -*------------------------------------------------------
-    // firstDraw - useful for static stim that don't need recalculating
-    // animation - called each frame after first (should be called on first too?)
-    // endTrial - clear stim, save data, move trial on (e.g. jsPsych.finishTrial), whatever user wants to do.
-    function runRAFLoop(
-        canvas,
-        duration,
-        onFrame, // drawing function called each frame - note timestamps are off from startTime and endTime. pass empty to just time.
-        onFinish = null, // (data) => void
-        frameInterval = null, // TODO: consider rolling median on ring buffer work array, or allowing passed in value. consider VFR.
-        hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height), // User could do visibility or opacity
-    ) {
+    function runRAFLoop({
+            canvas,
+            duration,
+            onFrame, // drawing function called each frame - note timestamps are off from startTime and endTime. pass empty to just time.
+            onFinish = null, // (data) => void
+            hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height), // User could do visibility or opacity
+
+            // Work in progress for inter-frame interval estimates
+            estimatedFrameInterval = null, // TODO: either pass in pre-calculated value, or pre-existing warmup frames array maybe?
+            preTrialFrameIntervals = null,
+            nFramesForIntervalEstimate = 20 // or use duration and frameRate to estimate?
+            // TODO: consider always round up or down on frames
+        }={}) {
         // TODO: consider generalising to work with non-canvas stim, hiding with visibility or opacity if not
         // TODO: consider generalising to use requestVideoFrameCallback for videos too?
-        let finished = false, frameNumber = 0, ctx = canvas.getContext('2d');
+        let frameInterval = estimatedFrameInterval, finished = false, frameNumber = 0, ctx = canvas.getContext('2d');
         let startTime = null, animationStartTime = null, previousCallbackEndTimestamp = null, lastFrameTime = null;
         let animationId = null, timeoutId = null;
 
+        // frame interval arrays for median calculation
+        const frameIntervals = new Array(nFramesForIntervalEstimate);
+        let writeHead = 0;
+        const sortedIntervals = new Array(nFramesForIntervalEstimate);
 
+        if(preTrialFrameIntervals !== null){
+            for(let i=0; i<preTrialFrameIntervals.length; i++){
+                frameIntervals[i % nFramesForIntervalEstimate] = preTrialFrameIntervals[i]
+            }
+            writeHead = Math.min(preTrialFrameIntervals.length, nFramesForIntervalEstimate)
+        }
+
+        // cancel function
         function cancel() {
             finished = true;
             if (animationId) cancelAnimationFrame(animationId)
@@ -316,11 +393,38 @@
             // hideStimulus(canvas, ctx)
         }
 
+        // Calculating median
+        function pushInterval(interval){
+            frameIntervals[writeHead % nFramesForIntervalEstimate] = interval
+            writeHead++
+        }
+
+        function median(){
+            // TODO: consider streaming median with two heaps or "sliding-window median", LeetCode 480
+            // TODO: consider accounting for dropped frames as above
+            for(let i=0; i<nFramesForIntervalEstimate; i++) sortedIntervals[i] = frameIntervals[i];
+            sortedIntervals.sort((a, b) => a - b); // sort frame times
+            // Return middle of array even if not full if no estimatedFrameInterval exists
+            const filledArrayIndex = Math.min(writeHead, nFramesForIntervalEstimate)
+            const middle = Math.floor(filledArrayIndex/2)
+            return sortedIntervals[middle];
+        }
+
+        function getFrameInterval(interval){
+            if((nFramesForIntervalEstimate === 0 || writeHead < nFramesForIntervalEstimate) && estimatedFrameInterval) return estimatedFrameInterval // Return pre-calculated estimate
+            else if(nFramesForIntervalEstimate>0) return median(); // return rolling median
+            else return interval; // just return this interval if rolling median off and no pre-estimate provided - median doesn't break on this but more explicit
+        }
+
         function tick(timestamp){
             if(finished) { cancel(); return; }
-            frameInterval = timestamp-lastFrameTime // measured each frame
-            lastFrameTime = timestamp // placement of this? could carry through in args?
             frameNumber++;
+
+            // Assign frame interval estimation
+            const currentFrameInterval = timestamp-lastFrameTime
+            pushInterval(currentFrameInterval);
+            frameInterval = getFrameInterval(currentFrameInterval)
+
             // console.log('Time since last execute: ', (timestamp - previousCallbackEndTimestamp).toFixed(4))
             // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
             if (timestamp - startTime + (frameInterval * 1.5) < duration) {
@@ -340,6 +444,7 @@
                     }
                 });
             }
+            lastFrameTime = timestamp // placement of this? could carry through in args?
             previousCallbackEndTimestamp = performance.now(); // TODO: could function as some measure of likelihood frame pain was reached? maybe alongside a rVFC?
             // console.log('Time to execute: ', (previousCallbackEndTimestamp - timestamp).toFixed(4))
         }
@@ -389,7 +494,15 @@
             // const dots = getRandomRDKCoordinates() // Note: use this if you want to just calculate dot coordinates before each trial
             const dots = jsPsych.evaluateTimelineVariable('dotCoordinates') //https://www.jspsych.org/v8/reference/jspsych/#description_4
             const trialDuration = jsPsych.evaluateTimelineVariable('trialDuration')
-            const cancel = runRAFLoop(c, trialDuration, (canvas, ctx, duration, firstTimestamp, frameNumber)=>{drawRDK(ctx, dots, frameNumber)}, finishTrial)
+            const cancel = runRAFLoop({
+                canvas: c,
+                duration: trialDuration,
+                onFrame: (canvas, ctx, duration, firstTimestamp, frameNumber)=>{drawRDK(ctx, dots, frameNumber)},
+                onFinish: finishTrial,
+                estimatedFrameInterval: blockFrameInterval.median,        // estimatedFrameInterval  (scalar fallback)
+                // preTrialFrameIntervals: blockFrameInterval.differences,
+                nFramesForIntervalEstimate: 20 // or use duration and frameRate to estimate?
+            })
         },
         choices: "NO_KEYS",
         // https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
