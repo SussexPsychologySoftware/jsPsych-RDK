@@ -95,10 +95,11 @@
 
         // Store frames
         const ts = [];
+        // const deltas = [];
         await new Promise(res => { // could probably do this with a loop somehow
             function tick(t) {
                 ts.push(t);
-                deltas.push(performance.now() - t);
+                // deltas.push(performance.now() - t);
                 ts.length < nFrames + warmup ? requestAnimationFrame(tick) : res();
             }
             requestAnimationFrame(tick);
