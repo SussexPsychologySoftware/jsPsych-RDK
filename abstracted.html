@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>My experiment</title>
+    <script src="https://unpkg.com/jspsych@8.3.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-canvas-keyboard-response@2.2.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-call-function@1.1.3"></script>
+    <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet" type="text/css" />
+</head>
+<body></body>
+<script>
+    // FRAME RATE
+    /**
+     * Probe Chrome's own estimate of display pipeline depth.
+     *
+     * CAVEATS, in order of importance:
+     *  - expectedDisplayTime is the browser's BELIEF about when a frame becomes
+     *    visible, not a measurement. If Chrome's model omits a stage (e.g. an OS
+     *    compositor pass), this omits it too.
+     *  - This is the video element's path. A canvas captureStream source keeps it
+     *    closer to your canvas path than a decoded file would (no hardware overlay
+     *    / direct-scanout shortcuts), but it is still not a canvas measurement.
+     *  - The video must be rendered. display:none or zero size can suppress callbacks.
+     *  - Ground truth needs a photodiode. This is a sanity check, not a calibration.
+     *
+     *
+     *  USEAGE:
+     *  probePipelineDepth({ frameIntervalMs: 16.667 }).then(console.log)
+     */
+    async function probePipelineDepth({ frames = 60, frameIntervalMs = null } = {}) {
+        if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) {
+            throw new Error('requestVideoFrameCallback not supported here');
+        }
+
+        // Source: a canvas we keep dirtying, captured as a MediaStream.
+        // Avoids shipping a video asset and any codec/overlay weirdness.
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+
+        const video = document.createElement('video');
+        video.muted = true;        // required for autoplay without a gesture
+        video.playsInline = true;
+        Object.assign(video.style, {
+            position: 'fixed', right: '0', bottom: '0', width: '32px', height: '32px',
+            opacity: '0.02', pointerEvents: 'none', zIndex: '-1'
+        });
+        document.body.appendChild(video);
+
+        video.srcObject = canvas.captureStream(60);
+        await video.play();
+
+        let drawing = true;
+        (function paint() {                       // keep distinct frames flowing
+            if (!drawing) return;
+            ctx.fillStyle = `hsl(${(performance.now() / 4) % 360} 100% 50%)`;
+            ctx.fillRect(0, 0, 32, 32);
+            requestAnimationFrame(paint);
+        })();
+
+        const rows = [];
+        await new Promise(resolve => {
+            let n = 0;
+            video.requestVideoFrameCallback(function tick(now, meta) {
+                // `now` is the same clock/value an rAF callback would receive this turn
+                rows.push({
+                    displayLagMs:      meta.expectedDisplayTime - now,
+                    nowToSubmitMs:     meta.presentationTime    - now,
+                    submitToDisplayMs: meta.expectedDisplayTime - meta.presentationTime
+                });
+                ++n < frames ? video.requestVideoFrameCallback(tick) : resolve();
+            });
+        });
+
+        drawing = false;
+        video.srcObject.getTracks().forEach(t => t.stop());
+        video.remove();
+
+        const median = key => {
+            const v = rows.map(r => r[key]).sort((a, b) => a - b);
+            return v[Math.floor(v.length / 2)];
+        };
+
+        const displayLagMs = median('displayLagMs');
+        return {
+            samples: rows.length,
+            displayLagMs,                                   // T -> photons, per Chrome
+            nowToSubmitMs:     median('nowToSubmitMs'),     // T -> handed to compositor
+            submitToDisplayMs: median('submitToDisplayMs'), // compositor -> visible
+            depthInFrames: frameIntervalMs ? displayLagMs / frameIntervalMs : null
+        };
+    }
+
+    // SETTINGS ------------
+    const rdkSettings = {
+        rdkRadius: 300,
+        nDots: 17, // nDots per colour
+        dotRadiusPix: 3,
+        dotColours: ['black', 'lightgrey'],
+        nTrials: 10,
+        nBlocks: 3
+    }
+
+
+
+    // GLOBALS ------------
+    let frameInterval;
+    let animationID;
+    let trialRunning = false; // This variable is slight overkill but double protects against requestAnimationFrame trying to paint after trial ends.
+
+    // DEFINE TRIALS - pre-calculate dot coordinates ------------
+    // TODO: pre-draw on canvas and visibility change during trial or graphics blit to image?
+    function getRandomRDKCoordinates() {
+        // size of circle, the colour and size of dots, length of time
+        const rdkCentre = {x: rdkSettings.rdkRadius, y: rdkSettings.rdkRadius};
+        // DEBUGGING - draw outline of rdk circle and outer box
+        // drawCanvasOutline(c, ctx) // DEBUG
+        // drawRDKOutline(ctx, rdkCentre, rdkRadius); //DEBUG
+
+        const dots = [] // Store dot coordinates to check intersection
+        for(let i = 0; i < rdkSettings.nDots*rdkSettings.dotColours.length; i++){
+            // Get new non-overlapping dot
+            let newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius);
+            let detectedIntersections = 0
+            while (intersectsExistingDot(newDot, dots, rdkSettings.dotRadiusPix)) {
+                detectedIntersections++
+                if(detectedIntersections > 50) { // TODO: Consider removing this check - but it protects against a page crash when trying things out
+                    console.error(`Detected ${detectedIntersections} intersections with existing dots, exiting to avoid crash - maybe dots can't fit inside circle?`)
+                    throw new Error();
+                }
+                newDot = getRandomDotCoordinates(rdkCentre, rdkSettings.rdkRadius);
+            }
+            // console.log(detectedIntersections + ' intersections detected on dot ' + i)
+            dots.push(newDot);
+        }
+        return dots;
+    }
+
+    // Create array of random dot coordinates
+    function getRandomDotCoordinates(centre, radius){
+        const randomRadians = Math.random() * 2 * Math.PI;
+        // TODO: note dot centre is within circle bounds - so can poke but by dot radius;
+        const randomDistance = Math.sqrt(Math.random()); // 0=centre, 1=circumference
+        return {
+            x: centre.x + radius * Math.cos(randomRadians) * randomDistance,
+            y: centre.y + radius * Math.sin(randomRadians) * randomDistance
+        };
+    }
+
+    function circlesIntersect(centreA, centreB, dotRadius){
+        //https://www.geeksforgeeks.org/dsa/check-two-given-circles-touch-intersect/
+        // Find the distance between the centers.
+        const dist = Math.sqrt((centreA.x-centreB.x)**2 + (centreA.y-centreB.y)**2);
+        // Check whether the circles have at least one common point.
+        return dist < dotRadius*2;
+    }
+
+    function intersectsExistingDot(newDot, previousDots, dotRadius){
+        const nPreviousDots = previousDots.length;
+        for(let i = 0; i < nPreviousDots; i++){
+            if(circlesIntersect(newDot, previousDots[i], dotRadius)){
+                // console.log(`${nPreviousDots+1} intersected with dot ${i+1}`); // DEBUG
+                return true
+            }
+        }
+        return false;
+    }
+
+    // FRAME RATE --------------------
+    const measureFrameInterval = async function (nFrames = 120, warmup = 20) {
+        console.log('Measuring frame rate...')
+        // Note Chrome quantises DOMHighResTimeStamps to 0.1ms grid unless page is cross-origin isolated
+        // e.g. 16.6667 will be as 16.7 = 59.88 FPS when 60FS
+        // Must serve not-cross origin (GitHub Pages doesn't do this) for slightly better timestamps
+        // Don't be fooled by floating point issues giving many significant figures.
+
+
+        // Store frames
+        const ts = [];
+        const deltas = []
+        await new Promise(res => { // could probably do this with a loop somehow
+            function tick(t) {
+                ts.push(t);
+                deltas.push(performance.now() - t);
+                ts.length < nFrames + warmup ? requestAnimationFrame(tick) : res();
+            }
+            requestAnimationFrame(tick);
+        });
+
+        // TODO: consider:
+        // k = Math.round(interval / m)
+        // sum(k) = true total vsyncs across the baseline
+        //interval = (ts[last] − ts[0]) / K
+
+
+        // Get median
+        const d = [];
+        for (let i = warmup+1; i < ts.length; i++) d.push(ts[i] - ts[i-1]); // calculate frame time differences
+        d.sort((a, b) => a - b); // sort frame times
+        const middleIndex = Math.floor(d.length / 2)
+        const median = d[middleIndex];
+
+
+        // On deltas:
+        // deltas.sort((a, b) => a - b);   // numeric sort; JS defaults to lexicographic
+        // console.log({ min: deltas[0], median: deltas[30], max: deltas[59] });
+
+        // Other stats
+        // (ts[ts.length-1] - ts[0]) / (ts.length)
+        // calc error: Median Absolute Deviation - could be useful...
+        // const mad = d.map(x => Math.abs(x - median)).sort((a, b) => a - b)[middleIndex];
+
+        const frameStats = { median, FPS: 1000 / median };
+        console.log(frameStats);
+        return frameStats;
+    }
+
+    const setFrameInterval = async function (done) {
+        const res = await measureFrameInterval();
+        frameInterval = res;
+        done(res);
+    }
+
+    const measureFrameRateTrial = {
+        type: jsPsychCallFunction, // see https://www.jspsych.org/v8/plugins/call-function/
+        func: setFrameInterval,
+        async: true
+    }
+
+    // RDK -------------------
+
+    function checkStimTime(previousTs, startTime, c, ctx, trialDuration, frameNumber){
+        // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
+
+        if (!trialRunning) { animationID = undefined; return; }
+        const elapsedTimeAtNextFrame = (previousTs + frameInterval.median) - startTime;
+
+        if (animationID && elapsedTimeAtNextFrame < trialDuration - frameInterval.median/2) {
+            animationID = requestAnimationFrame(previousTs => checkStimTime(previousTs, startTime, c, ctx, trialDuration, ++frameNumber))
+        } else {
+            // Run the clear and then request another frame to record the actual time the clear was rendered and record that.
+            hideStimulus(c, ctx);                 // paint the clear on THIS frame (K)
+            animationID = requestAnimationFrame(endTime => {   // fires on frame K+1 = clear becomes visible
+                animationID = undefined
+                trialRunning = false
+                const displayedDurationMs = endTime - startTime
+                const displayedDifferenceMs = displayedDurationMs - trialDuration
+                // TODO: could log expected error...
+                // const expectedDurationMs = Math.round(trialDuration/frameInterval.median)*frameInterval.median // Nearest whole frame
+                // TODO: consider wrapping in setTimeout(() => {}, 0)
+                jsPsych.finishTrial({
+                    requestedDurationMs: trialDuration,
+                    startTime,
+                    endTime,
+                    displayedDurationMs,
+                    displayedDifferenceMs,
+                    nFrames: frameNumber, // NOTE: number of RAF callbacks (browser frames), not = number of screen refreshes if any frames were dropped.
+                    frameIntervalMs: frameInterval.median,
+                    fps: frameInterval.FPS
+                });
+                console.log(`Duration requested: ${trialDuration}ms, recorded: ${displayedDurationMs}ms, difference: ${displayedDifferenceMs}ms. N Frames ${frameNumber}`)
+            });
+            // console.log('Canvas cleared by Request Animation Frame')
+        }
+    }
+
+    function stopRAF() {
+        if (animationID) {
+            cancelAnimationFrame(animationID)
+            animationID = undefined
+        }
+    }
+
+    function hideStimulus(canvas, ctx){
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // For debugging - make sure dots are inside circle
+    function drawRDKOutline(ctx, centre, radius){
+        ctx.beginPath();
+        ctx.arc(centre.x, centre.y, radius, 0, 2 * Math.PI);
+        ctx.stroke();
+    }
+
+    function drawCanvasOutline(c, ctx){
+        ctx.beginPath();
+        ctx.rect(0, 0, c.width, c.height);
+        ctx.stroke();
+    }
+
+    function drawDots(ctx, dots, dotSize, colour, from, to, label) {
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        for (let i = from; i < to; i++) {
+            const dot = dots[i];
+            ctx.moveTo(dot.x + dotSize, dot.y);   // required, or arcs get joined by lines
+            ctx.arc(dot.x, dot.y, dotSize, 0, 2 * Math.PI);
+        }
+        ctx.fill();
+
+        // Optional label for debugging
+        // if(label !== undefined){
+        //     ctx.font = `${dotSize*2}px sans-serif`;
+        //     ctx.fillStyle = 'lightgrey'
+        //     const textSize = ctx.measureText(label).width/2;
+        //     ctx.fillText(label, dot.x-textSize, dot.y+textSize); //dot.x-(textSize.width/2), dot.y-(textSize.height/2)
+        // }
+    }
+
+
+    function drawRDK(ctx, dotCoordinates){
+        rdkSettings.dotColours.forEach((colour, c) => {
+            const from = c * rdkSettings.nDots;
+            drawDots(ctx, dotCoordinates, rdkSettings.dotRadiusPix, colour, from, from + rdkSettings.nDots);
+        });
+    }
+
+    function finishTrial(startTime, endTime, requestedDuration, frameNumber, callingFunction){
+        const durationError = (endTime-startTime)-requestedDuration
+        console.log(`Duration error: ${requestedDuration}, ${durationError.toFixed(4)}ms`, callingFunction)
+        jsPsych.finishTrial({
+            startTime,
+            endTime,
+            nFrames: frameNumber, // NOTE: number of RAF callbacks (browser frames), not = number of screen refreshes if any frames were dropped.
+        });
+    }
+
+    // -*------------------------------------------------------
+    // firstDraw - useful for static stim that don't need recalculating
+    // animation - called each frame after first (should be called on first too?)
+    // endTrial - clear stim, save data, move trial on (e.g. jsPsych.finishTrial), whatever user wants to do.
+    function runRAFLoop(
+        canvas,
+        duration,
+        firstDraw, // (ctx, canvas) => void
+        onFinish, // (data) => void
+        onFrame = null, // (ctx, canvas, info) => void  useful for animation and recording trial times; omit for static stimuli
+        frameInterval = null,
+        hideStimulus = (c, x) => x.clearRect(0, 0, c.width, c.height),
+        ctx = canvas.getContext('2d'),
+    ) {
+        let finished = false, frameNumber = 0;
+        let startTime = null, previousCallbackEndTimestamp = null, lastFrameTime = null;
+        let animationId = null, timeoutId = null;
+
+        function cancel() {
+            finished = true;
+            if (animationId) cancelAnimationFrame(animationId)
+            if (timeoutId) clearTimeout(timeoutId);
+            animationId = null;
+            timeoutId = null;
+        }
+
+        function tick(timestamp){
+            if(finished) { cancel(); return; }
+            frameInterval = timestamp-lastFrameTime // measured each frame - TODO: consider median or allowing passed in value
+            frameNumber++;
+            // console.log('Time since last execute: ', (timestamp - previousCallbackEndTimestamp).toFixed(4))
+            // TODO: consider recording maxFrameGapMs, dropped/slow frames, maxFrameGapMs, jsPsych.data.getInteractionData() or focus event listener
+            if (timestamp - startTime + (frameInterval * 1.5) < duration) {
+                animationId = requestAnimationFrame(nextTimestamp => {
+                    lastFrameTime = timestamp // TODO: unsure where best to put this?
+                    if(onFrame) onFrame(canvas, ctx, duration, startTime, nextTimestamp, frameNumber)
+                    tick(nextTimestamp)
+                })
+            } else {
+                hideStimulus(canvas, ctx)
+                animationId = requestAnimationFrame(endTime => {   // clear becomes visible when this fires
+                    if (finished) return;
+                    finished = true;
+                    animationId = null;
+                    // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint, incase causes overrun
+                    setTimeout(() => {
+                        onFinish(startTime, endTime, duration, frameNumber, 'rAF')
+                    }, 0)
+                });
+            }
+            previousCallbackEndTimestamp = performance.now();
+            // console.log('Time to execute: ', (previousCallbackEndTimestamp - timestamp).toFixed(4))
+        }
+
+        animationId = requestAnimationFrame((firstTimestamp) => {
+            if(finished) { cancel(); return; }
+            if(firstDraw) firstDraw(canvas, ctx) // Run first draw - pass firstTimestamp or duration?
+            animationId = requestAnimationFrame(timestamp => {
+                startTime = timestamp;
+                lastFrameTime = firstTimestamp
+                tick(timestamp)
+            })
+
+            // TODO: backup for RAF onBlur issue, although why end trial user can't see? may as well record issue - b
+            //  but need to distinguish code execution lag from blur
+
+            // timeoutId = setTimeout(() => {
+            //     if(finished) { return }
+            //     cancel()
+            //     const endTime = performance.now();
+            //     onFinish(firstTimestamp, endTime, duration, frameNumber, 'setTimeout')
+            // }, duration+(frameInterval*3)) // frameInterval may be null though
+
+            previousCallbackEndTimestamp = performance.now();
+        })
+
+        return cancel;
+    }
+
+
+
+
+
+
+
+
+
+    // -*------------------------------------------------------
+
+
+    const rdkTrial = {
+        type: jsPsychCanvasKeyboardResponse,
+        canvas_size: [rdkSettings.rdkRadius*2, rdkSettings.rdkRadius*2], // Canvas fit to RDK
+        stimulus: (c)=>{
+            // const dots = getRandomRDKCoordinates() // Note: use this if you want to just calculate dot coordinates before each trial
+            const dots = jsPsych.evaluateTimelineVariable('dotCoordinates') //https://www.jspsych.org/v8/reference/jspsych/#description_4
+            const trialDuration = jsPsych.evaluateTimelineVariable('trialDuration')
+            const cancel = runRAFLoop(c, trialDuration, (canvas, ctx)=>{drawRDK(ctx, dots)}, finishTrial)
+        },
+        choices: "NO_KEYS",
+        // https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
+        // trial_duration: function() {return jsPsych.evaluateTimelineVariable('trialDuration') + rdkSettings.overshootAmountMs},
+        on_start: () => {
+            trialRunning = true
+        },
+        on_finish: () => {
+            trialRunning = false;
+            stopRAF();
+            // console.log('jsPsych ended trial');
+        }}
+
+    // TIMELINE  --------------------
+    // Pre-calculate dot coordinates for all blocks - have construct entire timeline each trial at a time as can't loop
+    function makeTimeline(){
+        const timeline = []
+
+        for(let i = 0; i < rdkSettings.nBlocks; i++){
+            // NOTE: if you want displayed times consistent, we'd need to use durations that are multiples of the frame rate, or display a number of frames directly
+            const trialDurations = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900];
+            timeline.push({ // Nested timeline makes the frameInterval at the start of the block
+                timeline: [measureFrameRateTrial],
+            })
+            const blockTrials = {
+                timeline: [rdkTrial],
+                timeline_variables: []
+            }
+            for(let c = 0; c < rdkSettings.nTrials; c++){
+                // Pick a random duration in milliseconds from the array
+                // const trialLength = trialDurations.splice(Math.random()*(trialDurations.length-1))[0]; // To sample without replacement, but must be enough elements to sample from
+                const trialDuration = trialDurations[c%trialDurations.length]//Math.floor(Math.random() * trialDurations.length)]
+                blockTrials.timeline_variables.push({
+                    dotCoordinates: getRandomRDKCoordinates(),
+                    //https://www.jspsych.org/v8/tutorials/rt-task/#part-8-using-functions-to-generate-parameters
+                    trialDuration: trialDuration
+                })
+            }
+            timeline.push(blockTrials)
+        }
+        console.log(timeline)
+        return timeline
+    }
+
+    // RUN JSPSYCH  --------------------
+    const jsPsych = initJsPsych();
+    const timeline = makeTimeline();
+    jsPsych.run(timeline);
+</script>
+</html>
