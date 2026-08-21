@@ -371,7 +371,7 @@
         // TODO: consider generalising to work with non-canvas stim, hiding with visibility or opacity if not
         // TODO: consider generalising to use requestVideoFrameCallback for videos too?
         let frameInterval = estimatedFrameInterval, finished = false, frameNumber = 0, ctx = canvas.getContext('2d');
-        let startTime = null, animationStartTime = null, lastFrameTime = null, previousCallbackEndTimestamp = null;
+        let startTime = null, lastFrameTime = null, previousCallbackEndTimestamp = null;
         let animationId = null, timeoutId = null;
 
         // frame interval arrays for median calculation
@@ -406,6 +406,8 @@
         }
 
         function runTimeoutBackup(startTime){
+            //  backup for RAF onBlur issue,
+            //  TODO: although why end trial user can't see? may as well record issue. but need to distinguish code execution lag from blur
             timeoutId = setTimeout(() => {
                 if(finished) return
                 cancel()
@@ -454,6 +456,16 @@
             return median();
         }
 
+        function endAnimationFrame(endTime){
+            if (finished) return;
+            finished = true;
+            animationId = null;
+            // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint, incase causes overrun
+            setTimeout(() => {
+                onFinish(startTime, endTime, duration, frameNumber, 'rAF')
+            }, 0)
+        }
+
         function tick(timestamp){
             if(finished) { cancel(); return; }
             frameNumber++;
@@ -473,15 +485,7 @@
                 animationId = requestAnimationFrame(tick)
             } else {
                 hideStimulus(canvas, ctx)
-                animationId = requestAnimationFrame(endTime => {   // clear becomes visible when this fires
-                    if (finished) return;
-                    finished = true;
-                    animationId = null;
-                    // setTimeout allows endTrial to leave render cycle and run on normal event loop after current frame's paint, incase causes overrun
-                    setTimeout(() => {
-                        onFinish(startTime, endTime, duration, frameNumber, 'rAF')
-                    }, 0)
-                });
+                animationId = requestAnimationFrame(endAnimationFrame);   // clear becomes visible when this fires
             }
             lastFrameTime = timestamp // placement of this? could carry through in args?
             // previousCallbackEndTimestamp = performance.now(); // TODO: could function as some measure of likelihood frame pain was reached? maybe alongside a rVFC?
@@ -489,19 +493,16 @@
         }
 
         animationId = requestAnimationFrame((firstTimestamp) => {
+            // TODO: could just gate this on frameNumber=0
             if(finished) { cancel(); return; }
             // First draw
             onFrame(canvas, ctx, duration, firstTimestamp, frameNumber)
-            animationStartTime = firstTimestamp;
             lastFrameTime = firstTimestamp
-            animationId = requestAnimationFrame(firstCallbackTimestamp => {
+            animationId = requestAnimationFrame(firstCallbackTimestamp => { // frame 1 drawn
                 startTime = firstCallbackTimestamp;
                 if(timeout) runTimeoutBackup(startTime)
                 tick(firstCallbackTimestamp)
             })
-
-            // TODO: backup for RAF onBlur issue, although why end trial user can't see? may as well record issue
-            //  but need to distinguish code execution lag from blur
 
             // previousCallbackEndTimestamp = performance.now();
         })
